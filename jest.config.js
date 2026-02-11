@@ -1,0 +1,6 @@
+module.exports = {
+  preset: 'jest-expo',
+  setupFilesAfterEnv: ['<rootDir>/jest.setup.ts'],
+  testPathIgnorePatterns: ['/node_modules/', '/.expo/'],
+  moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx', 'json'],
+};
