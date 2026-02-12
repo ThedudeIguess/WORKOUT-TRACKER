@@ -1,8 +1,10 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  KeyboardAvoidingView,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -10,7 +12,9 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
+import * as Notifications from 'expo-notifications';
 import { ExerciseCard } from '../../components/ExerciseCard';
 import { PrsInput } from '../../components/PrsInput';
 import { SetRow } from '../../components/SetRow';
@@ -18,6 +22,7 @@ import { theme } from '../../constants/theme';
 import {
   completeWorkoutSession,
   createWorkoutSession,
+  deleteSet,
   getActiveWorkout,
   getDayTemplateByDayNumber,
   getMostRecentLoad,
@@ -45,9 +50,44 @@ interface LocalLoggedSet {
   setOrder: number;
 }
 
+async function scheduleRestNotification(seconds: number): Promise<string | null> {
+  try {
+    const { status } = await Notifications.getPermissionsAsync();
+    let finalStatus = status;
+    if (status !== 'granted') {
+      const { status: newStatus } = await Notifications.requestPermissionsAsync();
+      finalStatus = newStatus;
+    }
+    if (finalStatus !== 'granted') {
+      return null;
+    }
+    const id = await Notifications.scheduleNotificationAsync({
+      content: {
+        title: 'Rest Timer Done',
+        body: 'Time to start your next set!',
+        sound: true,
+      },
+      trigger: { type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL, seconds, repeats: false },
+    });
+    return id;
+  } catch {
+    return null;
+  }
+}
+
+async function cancelRestNotification(id: string | null): Promise<void> {
+  if (!id) return;
+  try {
+    await Notifications.cancelScheduledNotificationAsync(id);
+  } catch {
+    // ignore
+  }
+}
+
 export default function ActiveWorkoutScreen() {
   const params = useLocalSearchParams<{ dayId: string; workoutId?: string }>();
   const router = useRouter();
+  const insets = useSafeAreaInsets();
 
   const dayNumber = Number(params.dayId || '1');
   const defaultRestSeconds = useSettingsStore((state) => state.defaultRestSeconds);
@@ -91,10 +131,12 @@ export default function ActiveWorkoutScreen() {
     {}
   );
   const [swapSlotId, setSwapSlotId] = useState<number | null>(null);
+  const restNotificationId = useRef<string | null>(null);
 
   useEffect(() => {
     return () => {
       clearSessionUiState();
+      void cancelRestNotification(restNotificationId.current);
     };
   }, [clearSessionUiState]);
 
@@ -238,6 +280,9 @@ export default function ActiveWorkoutScreen() {
   useEffect(() => {
     if (!restTimer.isRunning && restTimer.remainingSeconds === 0 && restTimer.totalSeconds > 0) {
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      // Timer completed naturally - cancel scheduled notification since we're in-app
+      void cancelRestNotification(restNotificationId.current);
+      restNotificationId.current = null;
     }
   }, [restTimer.isRunning, restTimer.remainingSeconds, restTimer.totalSeconds]);
 
@@ -418,7 +463,12 @@ export default function ActiveWorkoutScreen() {
       ]);
 
       clearDraftSet(slotId);
-      startRestTimer(slot.restSeconds || defaultRestSeconds);
+      const restSeconds = slot.restSeconds || defaultRestSeconds;
+      startRestTimer(restSeconds);
+      void cancelRestNotification(restNotificationId.current);
+      scheduleRestNotification(restSeconds).then((id) => {
+        restNotificationId.current = id;
+      });
       await Haptics.selectionAsync();
     } catch (error) {
       showActionError(
@@ -441,6 +491,39 @@ export default function ActiveWorkoutScreen() {
       ...current,
       [setToEdit.slotId]: setToEdit.id,
     }));
+  };
+
+  const deleteLoggedSet = (setToDelete: LocalLoggedSet) => {
+    Alert.alert(
+      'Delete Set',
+      `Delete Set ${setToDelete.setOrder} (${setToDelete.loadKg} kg x ${setToDelete.reps})?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await deleteSet(setToDelete.id);
+              setLoggedSets((current) =>
+                current.filter((set) => set.id !== setToDelete.id)
+              );
+              // Clear draft if we were editing this set
+              if (editingSetBySlotId[setToDelete.slotId] === setToDelete.id) {
+                clearDraftSet(setToDelete.slotId);
+                setEditingSetBySlotId((current) => {
+                  const next = { ...current };
+                  delete next[setToDelete.slotId];
+                  return next;
+                });
+              }
+            } catch (error) {
+              showActionError('Delete failed', error, 'Could not delete set.');
+            }
+          },
+        },
+      ]
+    );
   };
 
   const finishWorkout = async () => {
@@ -532,7 +615,11 @@ export default function ActiveWorkoutScreen() {
   }
 
   return (
-    <View style={styles.screen}>
+    <KeyboardAvoidingView
+      style={styles.screen}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
+    >
       <View style={styles.header}>
         <View style={styles.headerLeft}>
           <Text style={styles.dayTag}>Day {template.dayNumber}</Text>
@@ -644,6 +731,8 @@ export default function ActiveWorkoutScreen() {
                     <Pressable
                       key={set.id}
                       onPress={() => openEditSet(set)}
+                      onLongPress={() => deleteLoggedSet(set)}
+                      delayLongPress={500}
                       style={styles.loggedSetRow}
                     >
                       <Text style={styles.loggedSetText}>
@@ -680,7 +769,7 @@ export default function ActiveWorkoutScreen() {
       )}
 
       {restTimer.totalSeconds > 0 ? (
-        <View style={styles.restTimerBar}>
+        <View style={[styles.restTimerBar, { bottom: Math.max(10, insets.bottom) }]}>
           <View style={styles.restHeaderRow}>
             <Text style={styles.restTimerText}>
               Rest: {restTimer.remainingSeconds}s / {restTimer.totalSeconds}s
@@ -702,13 +791,25 @@ export default function ActiveWorkoutScreen() {
           </View>
 
           <View style={styles.restActions}>
-            <Pressable onPress={pauseRestTimer} style={styles.restActionButton}>
+            <Pressable onPress={() => {
+              pauseRestTimer();
+              void cancelRestNotification(restNotificationId.current);
+              restNotificationId.current = null;
+            }} style={styles.restActionButton}>
               <Text style={styles.restActionText}>Pause</Text>
             </Pressable>
-            <Pressable onPress={resetRestTimer} style={styles.restActionButton}>
+            <Pressable onPress={() => {
+              resetRestTimer();
+              void cancelRestNotification(restNotificationId.current);
+              restNotificationId.current = null;
+            }} style={styles.restActionButton}>
               <Text style={styles.restActionText}>Reset</Text>
             </Pressable>
-            <Pressable onPress={dismissRestTimer} style={styles.restActionButton}>
+            <Pressable onPress={() => {
+              dismissRestTimer();
+              void cancelRestNotification(restNotificationId.current);
+              restNotificationId.current = null;
+            }} style={styles.restActionButton}>
               <Text style={styles.restActionText}>Dismiss</Text>
             </Pressable>
           </View>
@@ -773,7 +874,7 @@ export default function ActiveWorkoutScreen() {
             style={styles.sheetDismissArea}
             onPress={() => setShowFinishFlow(false)}
           />
-          <View style={styles.sheet}>
+          <View style={[styles.sheet, { paddingBottom: Math.max(14, insets.bottom) }]}>
             <Text style={styles.sheetTitle}>Finish Workout</Text>
             <Text style={styles.summaryText}>Duration: {elapsedLabel}</Text>
             <Text style={styles.summaryText}>Total sets: {loggedSets.length}</Text>
@@ -808,7 +909,7 @@ export default function ActiveWorkoutScreen() {
           </View>
         </View>
       ) : null}
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 

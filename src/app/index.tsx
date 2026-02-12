@@ -14,6 +14,7 @@ import {
   getFirstWorkoutAnchor,
   getNextDayTemplate,
   getWeekStats,
+  listProgramDayTemplates,
 } from '../db/queries';
 import { getRollingWeekWindow } from '../utils/rollingWeek';
 import type { ActiveWorkoutSummary, DayTemplateWithSlots } from '../types';
@@ -57,6 +58,8 @@ export default function HomeScreen() {
   const [loading, setLoading] = useState(true);
   const [activeWorkout, setActiveWorkout] = useState<ActiveWorkoutSummary | null>(null);
   const [nextDayTemplate, setNextDayTemplate] = useState<DayTemplateWithSlots | null>(null);
+  const [allDayTemplates, setAllDayTemplates] = useState<DayTemplateWithSlots[]>([]);
+  const [showDayPicker, setShowDayPicker] = useState(false);
   const [weekLabel, setWeekLabel] = useState('Week 0');
   const [weekRangeLabel, setWeekRangeLabel] = useState('');
   const [weekStats, setWeekStats] = useState({ workoutsThisWeek: 0, setsThisWeek: 0 });
@@ -64,14 +67,16 @@ export default function HomeScreen() {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [active, nextTemplate, anchor] = await Promise.all([
+      const [active, nextTemplate, anchor, allTemplates] = await Promise.all([
         getActiveWorkout(),
         getNextDayTemplate(),
         getFirstWorkoutAnchor(),
+        listProgramDayTemplates(),
       ]);
 
       setActiveWorkout(active);
       setNextDayTemplate(nextTemplate);
+      setAllDayTemplates(allTemplates);
 
       const nowIso = new Date().toISOString();
       const weekWindow = getRollingWeekWindow(nowIso, anchor ?? nowIso);
@@ -168,6 +173,43 @@ export default function HomeScreen() {
       <Pressable onPress={handleStartPress} style={styles.startButton}>
         <Text style={styles.startButtonText}>{startButtonLabel}</Text>
       </Pressable>
+
+      {!activeWorkout && allDayTemplates.length > 1 ? (
+        <View style={styles.dayPickerCard}>
+          <Pressable
+            onPress={() => setShowDayPicker(!showDayPicker)}
+            style={styles.dayPickerToggle}
+          >
+            <Text style={styles.dayPickerToggleText}>
+              {showDayPicker ? 'Hide Day Picker' : 'Pick a Different Day'}
+            </Text>
+          </Pressable>
+          {showDayPicker ? (
+            <View style={styles.dayPickerGrid}>
+              {allDayTemplates.map((template) => {
+                const isNext = template.dayNumber === nextDayTemplate?.dayNumber;
+                return (
+                  <Pressable
+                    key={template.id}
+                    onPress={() => {
+                      router.push({
+                        pathname: '/workout/[dayId]',
+                        params: { dayId: String(template.dayNumber) },
+                      });
+                    }}
+                    style={[styles.dayPickerChip, isNext && styles.dayPickerChipActive]}
+                  >
+                    <Text style={[styles.dayPickerChipText, isNext && styles.dayPickerChipTextActive]}>
+                      Day {template.dayNumber}
+                    </Text>
+                    <Text style={styles.dayPickerChipName}>{template.dayName}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          ) : null}
+        </View>
+      ) : null}
 
       <View style={styles.statsRow}>
         <View style={styles.statCard}>
@@ -362,6 +404,64 @@ const styles = StyleSheet.create({
   },
   quickLinkSubtitle: {
     color: '#a4bfdc',
+    fontWeight: '600',
+    fontSize: 11,
+  },
+  dayPickerCard: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#304767',
+    backgroundColor: '#0f192a',
+    padding: 12,
+    gap: 10,
+  },
+  dayPickerToggle: {
+    minHeight: 40,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#39557a',
+    backgroundColor: '#122138',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+  },
+  dayPickerToggleText: {
+    color: '#cce0fa',
+    fontWeight: '800',
+    fontSize: 13,
+  },
+  dayPickerGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  dayPickerChip: {
+    flexBasis: '48%',
+    flexGrow: 1,
+    minHeight: 56,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#355274',
+    backgroundColor: '#16253d',
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    gap: 2,
+  },
+  dayPickerChipActive: {
+    borderColor: '#4aa987',
+    backgroundColor: '#153c30',
+  },
+  dayPickerChipText: {
+    color: '#dce9ff',
+    fontWeight: '900',
+    fontSize: 13,
+  },
+  dayPickerChipTextActive: {
+    color: '#b6f2d7',
+  },
+  dayPickerChipName: {
+    color: '#9fb8d8',
     fontWeight: '600',
     fontSize: 11,
   },

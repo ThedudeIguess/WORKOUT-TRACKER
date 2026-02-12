@@ -8,7 +8,7 @@ import {
   Text,
   View,
 } from 'react-native';
-import { getWorkoutHistory } from '../../db/queries';
+import { getWorkoutHistory, getWorkoutExerciseSummaries } from '../../db/queries';
 import type { WorkoutHistoryItem } from '../../types';
 import { theme } from '../../constants/theme';
 
@@ -35,8 +35,17 @@ export default function WorkoutHistoryScreen() {
         setLoading(true);
         try {
           const history = await getWorkoutHistory(100);
+          if (!mounted) return;
+
+          const workoutIds = history.map((h) => h.workoutId);
+          const summaries = await getWorkoutExerciseSummaries(workoutIds);
+          const enriched = history.map((item) => ({
+            ...item,
+            exerciseSummary: summaries[item.workoutId]?.join(', ') ?? '',
+          }));
+
           if (mounted) {
-            setItems(history);
+            setItems(enriched);
           }
         } finally {
           if (mounted) {
@@ -124,6 +133,12 @@ export default function WorkoutHistoryScreen() {
           </View>
 
           <Text style={styles.title}>{item.dayName}</Text>
+
+          {item.exerciseSummary ? (
+            <Text style={styles.exerciseSummaryText} numberOfLines={2}>
+              {item.exerciseSummary}
+            </Text>
+          ) : null}
 
           <View style={styles.metricsRow}>
             <View style={styles.metricPill}>
@@ -257,6 +272,12 @@ const styles = StyleSheet.create({
     color: theme.colors.textPrimary,
     fontSize: 18,
     fontWeight: '900',
+  },
+  exerciseSummaryText: {
+    color: '#9fb8d8',
+    fontSize: 12,
+    fontWeight: '600',
+    lineHeight: 17,
   },
   metricsRow: {
     flexDirection: 'row',
