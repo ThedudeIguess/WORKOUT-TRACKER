@@ -69,11 +69,18 @@ export default function RootLayout() {
       <StatusBar style="light" />
       <Stack
         screenOptions={{
-          headerStyle: { backgroundColor: theme.colors.background },
+          headerStyle: {
+            backgroundColor: theme.colors.bg1,
+          },
           headerTintColor: theme.colors.textPrimary,
-          headerTitleStyle: { fontWeight: '800' },
+          headerTitleStyle: {
+            color: theme.colors.textPrimary,
+            fontWeight: '700',
+          },
           headerShadowVisible: false,
-          contentStyle: { backgroundColor: theme.colors.background },
+          contentStyle: {
+            backgroundColor: theme.colors.bg1,
+          },
         }}
       />
     </SafeAreaProvider>
@@ -83,7 +90,7 @@ export default function RootLayout() {
 const styles = StyleSheet.create({
   centeredScreen: {
     flex: 1,
-    backgroundColor: theme.colors.background,
+    backgroundColor: theme.colors.bg1,
     alignItems: 'center',
     justifyContent: 'center',
     gap: 10,

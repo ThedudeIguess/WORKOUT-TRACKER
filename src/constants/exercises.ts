@@ -8,6 +8,7 @@ export const exercises: Exercise[] = [
   { id: 'barbell-back-squat', name: 'Barbell Back Squat', category: 'compound', equipment: 'barbell', isActive: true },
   { id: 'seated-leg-curl', name: 'Seated Leg Curl', category: 'isolation', equipment: 'machine', isActive: true },
   { id: 'ghd-raise', name: 'GHD Raise', category: 'isolation', equipment: 'machine', isActive: true },
+  { id: 'hyperextension-glute', name: 'Hyperextension (Glute Focus)', category: 'isolation', equipment: 'machine', isActive: true },
   { id: 'hanging-knee-raise', name: 'Hanging Knee Raise', category: 'isolation', equipment: 'bodyweight', isActive: true },
   { id: 'wall-hip-flexor-stretch', name: 'Wall Hip Flexor Stretch', category: 'mobility', equipment: 'bodyweight', isActive: true },
   { id: 'barbell-bench-press', name: 'Barbell Bench Press', category: 'compound', equipment: 'barbell', isActive: true },
@@ -49,6 +50,8 @@ export const exerciseMuscleMappings: ExerciseMuscleMapping[] = [
   { exerciseId: 'seated-leg-curl', muscleGroup: 'hamstrings', role: 'direct' },
 
   { exerciseId: 'ghd-raise', muscleGroup: 'abs', role: 'direct' },
+  { exerciseId: 'hyperextension-glute', muscleGroup: 'glutes', role: 'direct' },
+  { exerciseId: 'hyperextension-glute', muscleGroup: 'hamstrings', role: 'indirect' },
   { exerciseId: 'hanging-knee-raise', muscleGroup: 'abs', role: 'direct' },
 
   { exerciseId: 'barbell-bench-press', muscleGroup: 'chest', role: 'direct' },

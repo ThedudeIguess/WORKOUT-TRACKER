@@ -236,26 +236,25 @@ export default function SettingsScreen() {
       <View style={styles.heroCard}>
         <Text style={styles.heroTag}>Settings</Text>
         <Text style={styles.heroTitle}>Local Preferences</Text>
-        <Text style={styles.heroSubtitle}>
-          Everything stays on-device. Export JSON periodically for backup.
-        </Text>
+        <Text style={styles.heroSubtitle}>Offline only. Backup with JSON export.</Text>
       </View>
 
       <View style={styles.card}>
-        <Text style={styles.cardTitle}>Data Export</Text>
-        <Text style={styles.metaText}>Generate and restore JSON backups of local data.</Text>
-
-        <View style={styles.inlineRow}>
+        <Text style={styles.cardTitle}>Data Backup</Text>
+        <View style={styles.rowButtons}>
           <Pressable
             disabled={isExporting}
             onPress={() => {
               void exportJson();
             }}
-            style={[styles.primaryButton, styles.flexGrow, isExporting && styles.primaryButtonDisabled]}
+            style={({ pressed }) => [
+              styles.primaryButton,
+              styles.flex,
+              isExporting && styles.disabled,
+              pressed && styles.pressed,
+            ]}
           >
-            <Text style={styles.primaryButtonText}>
-              {isExporting ? 'Exporting...' : 'Export JSON'}
-            </Text>
+            <Text style={styles.primaryButtonText}>{isExporting ? 'Exporting...' : 'Export JSON'}</Text>
           </Pressable>
 
           <Pressable
@@ -263,11 +262,13 @@ export default function SettingsScreen() {
             onPress={() => {
               void importJson();
             }}
-            style={[styles.secondaryButton, isImporting && styles.primaryButtonDisabled]}
+            style={({ pressed }) => [
+              styles.secondaryButton,
+              isImporting && styles.disabled,
+              pressed && styles.pressed,
+            ]}
           >
-            <Text style={styles.secondaryButtonText}>
-              {isImporting ? 'Working...' : 'Import JSON'}
-            </Text>
+            <Text style={styles.secondaryButtonText}>{isImporting ? 'Working...' : 'Import JSON'}</Text>
           </Pressable>
         </View>
       </View>
@@ -275,54 +276,41 @@ export default function SettingsScreen() {
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Preferences</Text>
 
-        <View style={styles.preferenceRow}>
-          <Text style={styles.preferenceLabel}>Units</Text>
+        <View style={styles.settingRow}>
+          <Text style={styles.settingLabel}>Units</Text>
           <View style={styles.segmentedRow}>
             <Pressable
               onPress={() => void updateUnits('kg')}
               disabled={isSavingPreferences}
-              style={[
+              style={({ pressed }) => [
                 styles.segmentedButton,
                 units === 'kg' && styles.segmentedButtonActive,
+                pressed && styles.pressed,
               ]}
             >
-              <Text
-                style={[
-                  styles.segmentedText,
-                  units === 'kg' && styles.segmentedTextActive,
-                ]}
-              >
-                kg
-              </Text>
+              <Text style={[styles.segmentedText, units === 'kg' && styles.segmentedTextActive]}>kg</Text>
             </Pressable>
-
             <Pressable
               onPress={() => void updateUnits('lb')}
               disabled={isSavingPreferences}
-              style={[
+              style={({ pressed }) => [
                 styles.segmentedButton,
                 units === 'lb' && styles.segmentedButtonActive,
+                pressed && styles.pressed,
               ]}
             >
-              <Text
-                style={[
-                  styles.segmentedText,
-                  units === 'lb' && styles.segmentedTextActive,
-                ]}
-              >
-                lb
-              </Text>
+              <Text style={[styles.segmentedText, units === 'lb' && styles.segmentedTextActive]}>lb</Text>
             </Pressable>
           </View>
         </View>
 
-        <View style={styles.preferenceRow}>
-          <Text style={styles.preferenceLabel}>Default Rest Timer</Text>
+        <View style={styles.settingRow}>
+          <Text style={styles.settingLabel}>Default Rest</Text>
           <View style={styles.restControlRow}>
             <Pressable
               onPress={() => void updateRestSeconds(Math.max(30, defaultRestSeconds - 15))}
               disabled={isSavingPreferences}
-              style={styles.restControlButton}
+              style={({ pressed }) => [styles.restControlButton, pressed && styles.pressed]}
             >
               <Text style={styles.restControlButtonText}>-15s</Text>
             </Pressable>
@@ -332,7 +320,7 @@ export default function SettingsScreen() {
             <Pressable
               onPress={() => void updateRestSeconds(defaultRestSeconds + 15)}
               disabled={isSavingPreferences}
-              style={styles.restControlButton}
+              style={({ pressed }) => [styles.restControlButton, pressed && styles.pressed]}
             >
               <Text style={styles.restControlButtonText}>+15s</Text>
             </Pressable>
@@ -343,26 +331,28 @@ export default function SettingsScreen() {
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Bodyweight Log</Text>
         <Text style={styles.metaText}>
-          Latest: {latestBodyweight !== null ? `${latestBodyweight.toFixed(1)} kg` : 'No entries yet'}
+          Latest: {latestBodyweight !== null ? `${latestBodyweight.toFixed(1)} kg` : 'No entries'}
         </Text>
 
-        <View style={styles.inlineRow}>
+        <View style={styles.rowButtons}>
           <TextInput
             value={bodyweightInput}
             onChangeText={setBodyweightInput}
             keyboardType="decimal-pad"
             placeholder="kg"
-            placeholderTextColor={theme.colors.textSecondary}
-            style={[styles.input, styles.flexGrow]}
+            placeholderTextColor={theme.colors.textMuted}
+            style={[styles.input, styles.flex]}
           />
           <Pressable
             disabled={isAddingBodyweight}
             onPress={() => void addBodyweight()}
-            style={[styles.smallButton, isAddingBodyweight && styles.smallButtonDisabled]}
+            style={({ pressed }) => [
+              styles.secondaryButton,
+              isAddingBodyweight && styles.disabled,
+              pressed && styles.pressed,
+            ]}
           >
-            <Text style={styles.smallButtonText}>
-              {isAddingBodyweight ? 'Saving...' : 'Add'}
-            </Text>
+            <Text style={styles.secondaryButtonText}>{isAddingBodyweight ? 'Saving...' : 'Add'}</Text>
           </Pressable>
         </View>
 
@@ -370,12 +360,10 @@ export default function SettingsScreen() {
           <Text style={styles.metaText}>No bodyweight entries recorded yet.</Text>
         ) : (
           bodyweightEntries.map((entry) => (
-            <View key={entry.id} style={styles.bodyweightRow}>
-              <Text style={styles.bodyweightDate}>
-                {new Date(entry.loggedAt).toLocaleDateString()}
-              </Text>
-              <Text style={styles.bodyweightValue}>{entry.weightKg.toFixed(1)} kg</Text>
-              <Text style={styles.bodyweightSource}>{entry.source}</Text>
+            <View key={entry.id} style={styles.logRow}>
+              <Text style={styles.logDate}>{new Date(entry.loggedAt).toLocaleDateString()}</Text>
+              <Text style={styles.logValue}>{entry.weightKg.toFixed(1)} kg</Text>
+              <Text style={styles.logSource}>{entry.source}</Text>
             </View>
           ))
         )}
@@ -383,12 +371,20 @@ export default function SettingsScreen() {
 
       <View style={styles.card}>
         <Text style={styles.cardTitle}>About</Text>
-        <Text style={styles.metaText}>Offline-only tracker for Hybrid Bodybuilding 2.0.</Text>
-        <Pressable onPress={() => router.push('/settings/exercises')} style={styles.linkButton}>
-          <Text style={styles.linkText}>Exercise Library Editor</Text>
+        <Text style={styles.metaText}>Hybrid Bodybuilding tracker running fully on-device.</Text>
+        <Pressable
+          onPress={() => router.push('/settings/exercises')}
+          style={({ pressed }) => [styles.navRow, pressed && styles.pressed]}
+        >
+          <Text style={styles.navLabel}>Exercise Library</Text>
+          <Text style={styles.navArrow}>›</Text>
         </Pressable>
-        <Pressable onPress={() => router.push('/settings/program')} style={styles.linkButton}>
-          <Text style={styles.linkText}>Program Settings</Text>
+        <Pressable
+          onPress={() => router.push('/settings/program')}
+          style={({ pressed }) => [styles.navRow, pressed && styles.pressed]}
+        >
+          <Text style={styles.navLabel}>Program Templates</Text>
+          <Text style={styles.navArrow}>›</Text>
         </Pressable>
       </View>
     </ScrollView>
@@ -398,226 +394,224 @@ export default function SettingsScreen() {
 
 const styles = StyleSheet.create({
   container: {
-    padding: 12,
-    gap: 10,
-    backgroundColor: theme.colors.background,
+    padding: theme.spacing.lg,
+    gap: theme.spacing.md,
+    backgroundColor: theme.colors.bg1,
   },
   heroCard: {
-    borderRadius: 14,
+    borderRadius: theme.radius.lg,
     borderWidth: 1,
-    borderColor: '#345378',
-    backgroundColor: '#122238',
-    padding: 12,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg2,
+    padding: theme.spacing.lg,
     gap: 3,
   },
   heroTag: {
-    color: '#a7c6ec',
-    fontSize: 11,
+    color: theme.colors.textSecondary,
+    fontSize: theme.fontSize.xs,
     fontWeight: '800',
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
+    letterSpacing: 0.5,
   },
   heroTitle: {
-    color: '#ebf3ff',
-    fontSize: 23,
-    fontWeight: '900',
+    color: theme.colors.textPrimary,
+    fontSize: theme.fontSize.xl,
+    fontWeight: '800',
   },
   heroSubtitle: {
-    color: '#b2c7e3',
-    fontSize: 12,
-    fontWeight: '600',
+    color: theme.colors.textMuted,
+    fontSize: theme.fontSize.sm,
   },
   card: {
-    borderRadius: 12,
+    borderRadius: theme.radius.md,
     borderWidth: 1,
-    borderColor: '#304868',
-    backgroundColor: '#0f192a',
-    padding: 12,
-    gap: 8,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg2,
+    padding: theme.spacing.md,
+    gap: theme.spacing.sm,
   },
   cardTitle: {
     color: theme.colors.textPrimary,
-    fontSize: 16,
+    fontSize: theme.fontSize.lg,
     fontWeight: '800',
   },
+  rowButtons: {
+    flexDirection: 'row',
+    gap: theme.spacing.sm,
+    alignItems: 'center',
+  },
+  flex: {
+    flex: 1,
+  },
   primaryButton: {
-    minHeight: 46,
-    borderRadius: 10,
+    minHeight: 44,
+    borderRadius: theme.radius.md,
     backgroundColor: theme.colors.accent,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  primaryButtonDisabled: {
-    backgroundColor: '#456075',
+    paddingHorizontal: 12,
   },
   primaryButtonText: {
-    color: '#071911',
+    color: '#03241d',
     fontWeight: '900',
-    fontSize: 14,
+    fontSize: theme.fontSize.sm,
   },
   secondaryButton: {
-    minHeight: 46,
-    borderRadius: 10,
+    minHeight: 44,
+    borderRadius: theme.radius.md,
     borderWidth: 1,
-    borderColor: '#39557a',
-    backgroundColor: '#122138',
+    borderColor: theme.colors.borderFocus,
+    backgroundColor: theme.colors.bg3,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 12,
   },
   secondaryButtonText: {
-    color: '#cce0fa',
+    color: theme.colors.textPrimary,
     fontWeight: '800',
-    fontSize: 13,
+    fontSize: theme.fontSize.sm,
   },
-  preferenceRow: {
-    gap: 7,
+  settingRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 8,
   },
-  preferenceLabel: {
-    color: '#a4bedf',
-    fontSize: 12,
+  settingLabel: {
+    color: theme.colors.textSecondary,
+    fontSize: theme.fontSize.sm,
     fontWeight: '700',
-    textTransform: 'uppercase',
   },
   segmentedRow: {
     flexDirection: 'row',
-    gap: 8,
+    gap: theme.spacing.sm,
   },
   segmentedButton: {
-    minHeight: 42,
-    minWidth: 72,
-    borderRadius: 10,
+    minHeight: 36,
+    minWidth: 56,
+    borderRadius: theme.radius.md,
     borderWidth: 1,
-    borderColor: '#39557a',
-    backgroundColor: '#122138',
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg1,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 10,
   },
   segmentedButtonActive: {
-    borderColor: '#4aa987',
-    backgroundColor: '#173f34',
+    borderColor: theme.colors.accent,
+    backgroundColor: theme.colors.accentDim,
   },
   segmentedText: {
-    color: theme.colors.textPrimary,
-    fontWeight: '800',
+    color: theme.colors.textSecondary,
+    fontWeight: '700',
+    fontSize: theme.fontSize.sm,
   },
   segmentedTextActive: {
-    color: '#b8f2d8',
+    color: theme.colors.accent,
   },
   restControlRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: theme.spacing.sm,
   },
   restControlButton: {
-    minHeight: 42,
-    minWidth: 66,
-    borderRadius: 10,
+    minHeight: 36,
+    minWidth: 54,
+    borderRadius: theme.radius.md,
     borderWidth: 1,
-    borderColor: '#39557a',
-    backgroundColor: '#122138',
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg1,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 10,
   },
   restControlButtonText: {
-    color: '#cce0fa',
+    color: theme.colors.textPrimary,
     fontWeight: '800',
+    fontVariant: ['tabular-nums'],
   },
   restValuePill: {
-    minHeight: 42,
-    borderRadius: 10,
+    minHeight: 36,
+    borderRadius: theme.radius.md,
     borderWidth: 1,
-    borderColor: '#44648f',
-    backgroundColor: '#17324f',
+    borderColor: theme.colors.borderFocus,
+    backgroundColor: theme.colors.bg3,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 14,
   },
   restValueText: {
-    color: '#d8e9ff',
+    color: theme.colors.textPrimary,
     fontWeight: '900',
-    fontSize: 14,
-  },
-  inlineRow: {
-    flexDirection: 'row',
-    gap: 8,
-    alignItems: 'center',
+    fontSize: theme.fontSize.md,
+    fontVariant: ['tabular-nums'],
   },
   input: {
     minHeight: 44,
-    borderRadius: 10,
+    borderRadius: theme.radius.md,
     borderWidth: 1,
-    borderColor: '#38567a',
-    backgroundColor: '#122139',
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg1,
     color: theme.colors.textPrimary,
     paddingHorizontal: 12,
-  },
-  flexGrow: {
-    flex: 1,
-  },
-  smallButton: {
-    minHeight: 42,
-    minWidth: 74,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#39557a',
-    backgroundColor: '#122138',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 10,
-  },
-  smallButtonDisabled: {
-    opacity: 0.65,
-  },
-  smallButtonText: {
-    color: '#cce0fa',
-    fontWeight: '800',
+    fontVariant: ['tabular-nums'],
   },
   metaText: {
-    color: theme.colors.textSecondary,
-    fontWeight: '600',
-    fontSize: 13,
+    color: theme.colors.textMuted,
+    fontSize: theme.fontSize.sm,
   },
-  bodyweightRow: {
-    minHeight: 42,
-    borderRadius: 10,
+  logRow: {
+    minHeight: 38,
+    borderRadius: theme.radius.md,
     borderWidth: 1,
-    borderColor: '#2f4565',
-    backgroundColor: '#122036',
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg1,
     paddingHorizontal: 10,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
   },
-  bodyweightDate: {
-    color: '#bad0ea',
+  logDate: {
+    color: theme.colors.textSecondary,
     fontWeight: '700',
-    fontSize: 12,
+    fontSize: theme.fontSize.sm,
+    fontVariant: ['tabular-nums'],
   },
-  bodyweightValue: {
-    color: '#e8f2ff',
-    fontWeight: '800',
-    fontSize: 13,
+  logValue: {
+    color: theme.colors.textPrimary,
+    fontWeight: '900',
+    fontSize: theme.fontSize.sm,
+    fontVariant: ['tabular-nums'],
   },
-  bodyweightSource: {
-    color: '#9db5d4',
+  logSource: {
+    color: theme.colors.textMuted,
     fontWeight: '700',
-    fontSize: 11,
+    fontSize: theme.fontSize.xs,
     textTransform: 'uppercase',
   },
-  linkButton: {
+  navRow: {
     minHeight: 44,
-    borderRadius: 10,
+    borderRadius: theme.radius.md,
     borderWidth: 1,
-    borderColor: '#39557a',
-    backgroundColor: '#122138',
-    justifyContent: 'center',
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg1,
     paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
-  linkText: {
-    color: '#deebff',
-    fontWeight: '800',
+  navLabel: {
+    color: theme.colors.textPrimary,
+    fontSize: theme.fontSize.sm,
+    fontWeight: '700',
+  },
+  navArrow: {
+    color: theme.colors.textMuted,
+    fontSize: theme.fontSize.lg,
+    fontWeight: '700',
+  },
+  disabled: {
+    opacity: 0.65,
+  },
+  pressed: {
+    opacity: 0.7,
   },
 });

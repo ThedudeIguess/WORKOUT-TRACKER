@@ -1,13 +1,13 @@
 import { StyleSheet, Text, View } from 'react-native';
-import type { VolumeZone } from '../types';
 import { theme } from '../constants/theme';
+import type { VolumeZone } from '../types';
 
 const zoneColor: Record<VolumeZone, string> = {
-  RED: '#ff6b6b',
-  YELLOW: '#f3c969',
-  GREEN: '#45d6a8',
-  AMBER: '#f0a561',
-  ORANGE: '#ff8a5a',
+  RED: theme.colors.zoneRed,
+  YELLOW: theme.colors.zoneYellow,
+  GREEN: theme.colors.zoneGreen,
+  AMBER: theme.colors.zoneAmber,
+  ORANGE: theme.colors.zoneOrange,
 };
 
 interface MuscleBarProps {
@@ -41,11 +41,9 @@ export function MuscleBar({
     <View style={styles.container}>
       <View style={styles.headerRow}>
         <Text style={styles.label}>{label}</Text>
-        <View style={[styles.valuePill, { borderColor: zoneColor[zone] }]}>
-          <Text style={[styles.value, { color: zoneColor[zone] }]}>
-            {value.toFixed(1)} | {zone}
-          </Text>
-        </View>
+        <Text style={[styles.value, { color: zoneColor[zone] }]}>
+          {value.toFixed(1)}
+        </Text>
       </View>
 
       <View style={styles.track}>
@@ -63,13 +61,15 @@ export function MuscleBar({
               backgroundColor: zoneColor[zone],
             },
           ]}
-        />
+        >
+          <View style={styles.fillGloss} />
+        </View>
       </View>
 
       {(optimalLow ?? mrvHigh) !== undefined ? (
         <View style={styles.thresholdRow}>
           <Text style={styles.thresholdLabel}>
-            {typeof optimalLow === 'number' ? `Opt >= ${optimalLow.toFixed(0)}` : ''}
+            {typeof optimalLow === 'number' ? `OPT ${optimalLow.toFixed(0)}` : ''}
           </Text>
           <Text style={styles.thresholdLabel}>
             {typeof mrvHigh === 'number' ? `MRV ${mrvHigh.toFixed(0)}` : ''}
@@ -82,7 +82,7 @@ export function MuscleBar({
 
 const styles = StyleSheet.create({
   container: {
-    gap: 7,
+    gap: 6,
   },
   headerRow: {
     flexDirection: 'row',
@@ -92,51 +92,52 @@ const styles = StyleSheet.create({
   label: {
     color: theme.colors.textPrimary,
     fontWeight: '700',
-    fontSize: 14,
-  },
-  valuePill: {
-    minHeight: 24,
-    borderRadius: 999,
-    borderWidth: 1,
-    backgroundColor: '#131f33',
-    justifyContent: 'center',
-    paddingHorizontal: 8,
+    fontSize: theme.fontSize.md,
   },
   value: {
-    fontWeight: '800',
-    fontSize: 11,
+    fontWeight: '900',
+    fontSize: theme.fontSize.sm,
+    fontVariant: ['tabular-nums'],
+    letterSpacing: 0.3,
   },
   track: {
-    height: 12,
+    height: 8,
     borderRadius: 999,
     overflow: 'hidden',
-    backgroundColor: theme.colors.surfaceRaised,
+    backgroundColor: theme.colors.bg1,
     borderWidth: 1,
     borderColor: theme.colors.border,
     position: 'relative',
   },
   marker: {
     position: 'absolute',
-    top: 0,
-    bottom: 0,
+    top: -1,
+    bottom: -1,
     width: 2,
-    backgroundColor: '#d9e4f5',
-    opacity: 0.55,
+    backgroundColor: '#d0deef',
+    opacity: 0.8,
+    zIndex: 2,
   },
   markerMrv: {
-    backgroundColor: '#ffb07a',
+    backgroundColor: theme.colors.zoneOrange,
   },
   fill: {
     height: '100%',
     borderRadius: 999,
+    justifyContent: 'flex-start',
+  },
+  fillGloss: {
+    height: '50%',
+    backgroundColor: '#ffffff33',
   },
   thresholdRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
   },
   thresholdLabel: {
-    color: theme.colors.textSecondary,
-    fontSize: 10,
+    color: theme.colors.textMuted,
+    fontSize: theme.fontSize.xs,
     fontWeight: '700',
+    fontVariant: ['tabular-nums'],
   },
 });

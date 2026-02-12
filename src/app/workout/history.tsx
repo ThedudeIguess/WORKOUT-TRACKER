@@ -8,9 +8,9 @@ import {
   Text,
   View,
 } from 'react-native';
-import { getWorkoutHistory, getWorkoutExerciseSummaries } from '../../db/queries';
-import type { WorkoutHistoryItem } from '../../types';
 import { theme } from '../../constants/theme';
+import { getWorkoutExerciseSummaries, getWorkoutHistory } from '../../db/queries';
+import type { WorkoutHistoryItem } from '../../types';
 
 function formatDuration(minutes: number): string {
   if (minutes < 60) {
@@ -22,45 +22,70 @@ function formatDuration(minutes: number): string {
   return `${hours}h ${String(remainingMinutes).padStart(2, '0')}m`;
 }
 
+function prsBadgeColor(prsScore: number | null): string {
+  if (prsScore === null) {
+    return theme.colors.textMuted;
+  }
+  if (prsScore <= 3) {
+    return theme.colors.zoneRed;
+  }
+  if (prsScore <= 6) {
+    return theme.colors.zoneYellow;
+  }
+  return theme.colors.zoneGreen;
+}
+
 export default function WorkoutHistoryScreen() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [items, setItems] = useState<WorkoutHistoryItem[]>([]);
+  const [exerciseSummariesByWorkout, setExerciseSummariesByWorkout] = useState<
+    Record<string, string>
+  >({});
+
+  const load = useCallback(async (showLoadingState = true) => {
+    if (showLoadingState) {
+      setLoading(true);
+    }
+
+    try {
+      const history = await getWorkoutHistory(100);
+      setItems(history);
+
+      const workoutIds = history.map((entry) => entry.workoutId);
+      if (workoutIds.length === 0) {
+        setExerciseSummariesByWorkout({});
+      } else {
+        const summaries = await getWorkoutExerciseSummaries(workoutIds);
+        const next: Record<string, string> = {};
+        for (const workoutId of workoutIds) {
+          const labels = summaries[workoutId] ?? [];
+          next[workoutId] = labels.join(', ');
+        }
+        setExerciseSummariesByWorkout(next);
+      }
+    } finally {
+      if (showLoadingState) {
+        setLoading(false);
+      }
+    }
+  }, []);
 
   useFocusEffect(
     useCallback(() => {
-      let mounted = true;
-
-      const load = async () => {
-        setLoading(true);
-        try {
-          const history = await getWorkoutHistory(100);
-          if (!mounted) return;
-
-          const workoutIds = history.map((h) => h.workoutId);
-          const summaries = await getWorkoutExerciseSummaries(workoutIds);
-          const enriched = history.map((item) => ({
-            ...item,
-            exerciseSummary: summaries[item.workoutId]?.join(', ') ?? '',
-          }));
-
-          if (mounted) {
-            setItems(enriched);
-          }
-        } finally {
-          if (mounted) {
-            setLoading(false);
-          }
-        }
-      };
-
-      void load();
-
-      return () => {
-        mounted = false;
-      };
-    }, [])
+      void load(true);
+    }, [load])
   );
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await load(false);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [load]);
 
   const summary = useMemo(() => {
     const totalSets = items.reduce((sum, item) => sum + item.totalSets, 0);
@@ -87,21 +112,25 @@ export default function WorkoutHistoryScreen() {
       data={items}
       keyExtractor={(item) => item.workoutId}
       contentContainerStyle={styles.listContent}
+      refreshing={refreshing}
+      onRefresh={() => {
+        void onRefresh();
+      }}
       ListHeaderComponent={
         <View style={styles.headerBlock}>
           <View style={styles.heroCard}>
-            <Text style={styles.heroTag}>Completed Workouts</Text>
-            <Text style={styles.heroTitle}>{summary.totalWorkouts}</Text>
-            <Text style={styles.heroSubtitle}>Sessions tracked</Text>
+            <Text style={styles.heroTag}>Workout History</Text>
+            <Text style={styles.heroValue}>{summary.totalWorkouts}</Text>
+            <Text style={styles.heroSubtitle}>Completed sessions</Text>
           </View>
 
           <View style={styles.summaryRow}>
             <View style={styles.summaryCard}>
-              <Text style={styles.summaryLabel}>Total Sets</Text>
+              <Text style={styles.summaryLabel}>TOTAL SETS</Text>
               <Text style={styles.summaryValue}>{summary.totalSets}</Text>
             </View>
             <View style={styles.summaryCard}>
-              <Text style={styles.summaryLabel}>Avg Duration</Text>
+              <Text style={styles.summaryLabel}>AVG DURATION</Text>
               <Text style={styles.summaryValue}>{formatDuration(summary.averageMinutes)}</Text>
             </View>
           </View>
@@ -113,49 +142,66 @@ export default function WorkoutHistoryScreen() {
           ) : null}
         </View>
       }
-      renderItem={({ item }) => (
-        <Pressable
-          onPress={() =>
-            router.push({
-              pathname: '/workout/session/[workoutId]',
-              params: { workoutId: item.workoutId },
-            })
-          }
-          style={styles.card}
-        >
-          <View style={styles.cardHeaderRow}>
-            <View style={styles.dayChip}>
-              <Text style={styles.dayChipText}>Day {item.dayNumber}</Text>
-            </View>
-            <Text style={styles.dateText}>
-              {new Date(item.completedAt).toLocaleDateString()} {new Date(item.completedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-            </Text>
-          </View>
+      renderItem={({ item, index }) => {
+        const completedAtDate = new Date(item.completedAt);
+        const day = completedAtDate.getDate();
+        const monthYear = completedAtDate.toLocaleDateString([], {
+          month: 'short',
+          year: 'numeric',
+        });
+        const color = prsBadgeColor(item.prsScore);
+        const exerciseSummary = exerciseSummariesByWorkout[item.workoutId];
 
-          <Text style={styles.title}>{item.dayName}</Text>
+        return (
+          <Pressable
+            onPress={() =>
+              router.push({
+                pathname: '/workout/session/[workoutId]',
+                params: { workoutId: item.workoutId },
+              })
+            }
+            style={({ pressed }) => [
+              styles.card,
+              index % 2 === 1 && styles.cardAlt,
+              pressed && styles.pressed,
+            ]}
+          >
+            <View style={styles.cardTopRow}>
+              <View style={styles.dateBlock}>
+                <Text style={styles.dateDay}>{day}</Text>
+                <Text style={styles.dateMonthYear}>{monthYear}</Text>
+              </View>
 
-          {item.exerciseSummary ? (
-            <Text style={styles.exerciseSummaryText} numberOfLines={2}>
-              {item.exerciseSummary}
-            </Text>
-          ) : null}
+              <View style={styles.cardMain}>
+                <View style={styles.cardHeaderRow}>
+                  <Text style={styles.title}>
+                    Day {item.dayNumber} • {item.dayName}
+                  </Text>
+                  <View style={[styles.prsBadge, { borderColor: color }]}> 
+                    <Text style={[styles.prsBadgeText, { color }]}>PRS {item.prsScore ?? '-'}</Text>
+                  </View>
+                </View>
 
-          <View style={styles.metricsRow}>
-            <View style={styles.metricPill}>
-              <Text style={styles.metricLabel}>Duration</Text>
-              <Text style={styles.metricValue}>{formatDuration(item.durationMinutes)}</Text>
+                {exerciseSummary ? (
+                  <Text style={styles.exerciseSummaryText} numberOfLines={2}>
+                    {exerciseSummary}
+                  </Text>
+                ) : null}
+
+                <View style={styles.metricsRow}>
+                  <Text style={styles.metricValue}>{formatDuration(item.durationMinutes)}</Text>
+                  <Text style={styles.metricDivider}>•</Text>
+                  <Text style={styles.metricValue}>{item.totalSets} sets</Text>
+                  <Text style={styles.metricDivider}>•</Text>
+                  <Text style={styles.metricValue}>
+                    {completedAtDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </Text>
+                </View>
+              </View>
             </View>
-            <View style={styles.metricPill}>
-              <Text style={styles.metricLabel}>Sets</Text>
-              <Text style={styles.metricValue}>{item.totalSets}</Text>
-            </View>
-            <View style={styles.metricPill}>
-              <Text style={styles.metricLabel}>PRS</Text>
-              <Text style={styles.metricValue}>{item.prsScore ?? '-'}</Text>
-            </View>
-          </View>
-        </Pressable>
-      )}
+          </Pressable>
+        );
+      }}
       ListFooterComponent={<View style={styles.footerSpace} />}
     />
   );
@@ -166,146 +212,166 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: theme.colors.background,
+    backgroundColor: theme.colors.bg1,
   },
   listContent: {
-    padding: 12,
-    gap: 10,
-    backgroundColor: theme.colors.background,
+    padding: theme.spacing.lg,
+    gap: theme.spacing.md,
+    backgroundColor: theme.colors.bg1,
   },
   headerBlock: {
-    gap: 10,
+    gap: theme.spacing.md,
   },
   heroCard: {
-    borderRadius: 14,
+    borderRadius: theme.radius.lg,
     borderWidth: 1,
-    borderColor: '#345378',
-    backgroundColor: '#122238',
-    padding: 12,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg2,
+    padding: theme.spacing.lg,
     gap: 2,
   },
   heroTag: {
-    color: '#a7c6ec',
-    fontSize: 11,
+    color: theme.colors.textSecondary,
+    fontSize: theme.fontSize.xs,
     fontWeight: '800',
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
+    letterSpacing: 0.5,
   },
-  heroTitle: {
-    color: '#ebf3ff',
-    fontSize: 30,
+  heroValue: {
+    color: theme.colors.textPrimary,
+    fontSize: theme.fontSize.hero,
+    lineHeight: 40,
     fontWeight: '900',
+    fontVariant: ['tabular-nums'],
   },
   heroSubtitle: {
-    color: '#b2c7e3',
-    fontSize: 13,
-    fontWeight: '700',
+    color: theme.colors.textMuted,
+    fontSize: theme.fontSize.sm,
   },
   summaryRow: {
     flexDirection: 'row',
-    gap: 8,
+    gap: theme.spacing.sm,
   },
   summaryCard: {
     flex: 1,
-    borderRadius: 12,
+    borderRadius: theme.radius.md,
     borderWidth: 1,
-    borderColor: '#2f4868',
-    backgroundColor: '#101b2d',
-    padding: 10,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg2,
+    padding: theme.spacing.md,
     gap: 6,
   },
   summaryLabel: {
-    color: '#9fb8d8',
-    fontSize: 11,
+    color: theme.colors.textMuted,
+    fontSize: theme.fontSize.xs,
     fontWeight: '700',
-    textTransform: 'uppercase',
+    letterSpacing: 0.4,
   },
   summaryValue: {
-    color: '#eef5ff',
-    fontSize: 21,
+    color: theme.colors.textPrimary,
+    fontSize: theme.fontSize.xl,
     fontWeight: '900',
+    fontVariant: ['tabular-nums'],
   },
   emptyCard: {
-    borderRadius: 12,
+    borderRadius: theme.radius.md,
     borderWidth: 1,
     borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
-    padding: 14,
+    backgroundColor: theme.colors.bg2,
+    padding: theme.spacing.lg,
   },
   emptyText: {
     color: theme.colors.textSecondary,
-    fontWeight: '600',
   },
   card: {
-    borderRadius: 12,
+    borderRadius: theme.radius.md,
     borderWidth: 1,
-    borderColor: '#304868',
-    backgroundColor: '#0f1a2b',
-    padding: 12,
-    gap: 8,
+    borderColor: theme.colors.border,
+    backgroundColor: '#111923',
+    padding: theme.spacing.md,
+  },
+  cardAlt: {
+    backgroundColor: '#0e1520',
+  },
+  cardTopRow: {
+    flexDirection: 'row',
+    gap: theme.spacing.md,
+  },
+  dateBlock: {
+    minWidth: 52,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: theme.radius.sm,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg1,
+    paddingVertical: 6,
+  },
+  dateDay: {
+    color: theme.colors.textPrimary,
+    fontSize: theme.fontSize.xxl,
+    fontWeight: '900',
+    lineHeight: 30,
+    fontVariant: ['tabular-nums'],
+  },
+  dateMonthYear: {
+    color: theme.colors.textMuted,
+    fontSize: theme.fontSize.xs,
+    fontWeight: '700',
+  },
+  cardMain: {
+    flex: 1,
+    gap: 6,
   },
   cardHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    gap: 8,
   },
-  dayChip: {
+  title: {
+    flex: 1,
+    color: theme.colors.textPrimary,
+    fontSize: theme.fontSize.md,
+    fontWeight: '800',
+  },
+  prsBadge: {
     minHeight: 24,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: '#466a99',
-    backgroundColor: '#193152',
+    backgroundColor: theme.colors.bg1,
+    paddingHorizontal: 8,
     justifyContent: 'center',
-    paddingHorizontal: 9,
   },
-  dayChipText: {
-    color: '#d3e7ff',
-    fontSize: 11,
-    fontWeight: '900',
-  },
-  dateText: {
-    color: '#9fb8d8',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  title: {
-    color: theme.colors.textPrimary,
-    fontSize: 18,
-    fontWeight: '900',
+  prsBadgeText: {
+    fontSize: theme.fontSize.xs,
+    fontWeight: '800',
+    fontVariant: ['tabular-nums'],
   },
   exerciseSummaryText: {
-    color: '#9fb8d8',
-    fontSize: 12,
+    color: theme.colors.textSecondary,
+    fontSize: theme.fontSize.sm,
     fontWeight: '600',
     lineHeight: 17,
   },
   metricsRow: {
     flexDirection: 'row',
-    gap: 8,
-  },
-  metricPill: {
-    flex: 1,
-    minHeight: 44,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#324b6e',
-    backgroundColor: '#122036',
-    justifyContent: 'center',
-    paddingHorizontal: 8,
-    gap: 2,
-  },
-  metricLabel: {
-    color: '#9fb8d8',
-    fontSize: 10,
-    fontWeight: '700',
-    textTransform: 'uppercase',
+    alignItems: 'center',
+    gap: 6,
   },
   metricValue: {
-    color: '#ebf4ff',
-    fontSize: 14,
-    fontWeight: '800',
+    color: theme.colors.textSecondary,
+    fontSize: theme.fontSize.sm,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  metricDivider: {
+    color: theme.colors.textMuted,
+    fontSize: theme.fontSize.sm,
   },
   footerSpace: {
-    height: 16,
+    height: 14,
+  },
+  pressed: {
+    opacity: 0.7,
   },
 });

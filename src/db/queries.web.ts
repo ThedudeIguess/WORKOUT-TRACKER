@@ -132,6 +132,7 @@ function buildDayTemplates(): DayTemplateWithSlots[] {
             slotOrder: slot.slotOrder,
             defaultExerciseId: slot.defaultExerciseId,
             defaultExerciseName: defaultExercise.name,
+            inputMode: slot.inputMode ?? 'reps',
             targetSets: slot.targetSets,
             targetRepLow: slot.targetRepLow,
             targetRepHigh: slot.targetRepHigh,
@@ -208,12 +209,12 @@ export async function createWorkoutSession(input: {
   phaseId?: string;
   prsScore: number | null;
   bodyweightKg: number | null;
-  startedAt?: string;
+  startedAtOverride?: string;
 }): Promise<{ workoutId: string }> {
   ensureInitialized();
 
   const workoutId = generateWorkoutId();
-  const startedAt = input.startedAt ?? new Date().toISOString();
+  const startedAt = input.startedAtOverride ?? new Date().toISOString();
 
   const workout: Workout = {
     id: workoutId,
@@ -276,6 +277,7 @@ export async function logSet(input: {
   effortLabel: EffortLabel;
   isWarmup: boolean;
   notes: string | null;
+  loggedAtOverride?: string;
 }): Promise<{ setId: number }> {
   ensureInitialized();
 
@@ -299,7 +301,7 @@ export async function logSet(input: {
     loadKg: input.loadKg,
     effortLabel: input.effortLabel,
     isWarmup: input.isWarmup,
-    loggedAt: new Date().toISOString(),
+    loggedAt: input.loggedAtOverride ?? new Date().toISOString(),
     notes: input.notes,
   });
 
@@ -749,6 +751,142 @@ export async function setExerciseActive(input: {
       ? { ...exercise, isActive: input.isActive }
       : exercise
   );
+}
+
+export async function insertCustomExercise(exercise: {
+  id: string;
+  name: string;
+  category: Exercise['category'];
+  equipment: Exercise['equipment'];
+}): Promise<void> {
+  ensureInitialized();
+
+  state.exerciseLibrary = [
+    ...state.exerciseLibrary,
+    {
+      id: exercise.id,
+      name: exercise.name,
+      category: exercise.category,
+      equipment: exercise.equipment,
+      isActive: true,
+    },
+  ];
+}
+
+export async function insertExerciseMuscleMappings(mappings: {
+  exerciseId: string;
+  muscleGroup: string;
+  role: 'direct' | 'indirect';
+}[]): Promise<void> {
+  ensureInitialized();
+
+  for (const mapping of mappings) {
+    const existingIndex = state.exerciseMappings.findIndex(
+      (candidate) =>
+        candidate.exerciseId === mapping.exerciseId &&
+        candidate.muscleGroup === mapping.muscleGroup
+    );
+
+    if (existingIndex >= 0) {
+      state.exerciseMappings[existingIndex] = { ...mapping };
+      continue;
+    }
+
+    state.exerciseMappings.push({ ...mapping });
+  }
+}
+
+export async function addSlotAlternate(slotId: number, exerciseId: string): Promise<void> {
+  ensureInitialized();
+
+  const exercise = getExerciseById(exerciseId);
+  if (!exercise) {
+    return;
+  }
+
+  state.dayTemplates = state.dayTemplates.map((template) => ({
+    ...template,
+    slots: template.slots.map((slot) => {
+      if (slot.id !== slotId) {
+        return slot;
+      }
+
+      const alreadyExists = slot.alternateExercises.some(
+        (alternate) => alternate.id === exerciseId
+      );
+
+      if (alreadyExists) {
+        return slot;
+      }
+
+      return {
+        ...slot,
+        alternateExercises: [
+          ...slot.alternateExercises,
+          { id: exercise.id, name: exercise.name },
+        ].sort((left, right) => left.name.localeCompare(right.name)),
+      };
+    }),
+  }));
+}
+
+export async function updateCustomExerciseDefinition(input: {
+  exerciseId: string;
+  name: string;
+  category: Exercise['category'];
+}): Promise<void> {
+  ensureInitialized();
+
+  if (!input.exerciseId.startsWith('custom-')) {
+    throw new Error('Only custom exercises can be edited.');
+  }
+
+  state.exerciseLibrary = state.exerciseLibrary.map((exercise) =>
+    exercise.id === input.exerciseId
+      ? { ...exercise, name: input.name, category: input.category }
+      : exercise
+  );
+
+  state.dayTemplates = state.dayTemplates.map((template) => ({
+    ...template,
+    slots: template.slots.map((slot) => ({
+      ...slot,
+      alternateExercises: slot.alternateExercises.map((alternate) =>
+        alternate.id === input.exerciseId
+          ? { ...alternate, name: input.name }
+          : alternate
+      ),
+    })),
+  }));
+}
+
+export async function deleteCustomExercise(exerciseId: string): Promise<void> {
+  ensureInitialized();
+
+  if (!exerciseId.startsWith('custom-')) {
+    throw new Error('Only custom exercises can be deleted.');
+  }
+
+  const hasLoggedSets = state.sets.some((set) => set.exerciseId === exerciseId);
+  if (hasLoggedSets) {
+    throw new Error('Cannot delete a custom exercise that already has logged sets.');
+  }
+
+  state.exerciseLibrary = state.exerciseLibrary.filter(
+    (exercise) => exercise.id !== exerciseId
+  );
+  state.exerciseMappings = state.exerciseMappings.filter(
+    (mapping) => mapping.exerciseId !== exerciseId
+  );
+  state.dayTemplates = state.dayTemplates.map((template) => ({
+    ...template,
+    slots: template.slots.map((slot) => ({
+      ...slot,
+      alternateExercises: slot.alternateExercises.filter(
+        (alternate) => alternate.id !== exerciseId
+      ),
+    })),
+  }));
 }
 
 export async function getStrengthTrendSeries(

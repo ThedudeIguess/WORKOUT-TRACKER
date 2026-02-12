@@ -121,6 +121,14 @@ const migrations: Migration[] = [
       'CREATE INDEX IF NOT EXISTS idx_bodyweight_logged_at ON bodyweight_log(logged_at);',
     ],
   },
+  {
+    version: 2,
+    statements: [
+      `ALTER TABLE template_exercise_slots
+       ADD COLUMN input_mode TEXT NOT NULL DEFAULT 'reps'
+       CHECK(input_mode IN ('reps', 'timed'));`,
+    ],
+  },
 ];
 
 export const CURRENT_SCHEMA_VERSION = migrations[migrations.length - 1]?.version ?? 0;

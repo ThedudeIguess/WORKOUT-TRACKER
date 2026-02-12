@@ -8,6 +8,7 @@ interface ExerciseCardProps {
   notes?: string | null;
   expanded: boolean;
   completed?: boolean;
+  accentColor?: string;
   onToggle: () => void;
   onOpenSwap: () => void;
   progressionHint?: string | null;
@@ -21,40 +22,54 @@ export function ExerciseCard({
   notes,
   expanded,
   completed = false,
+  accentColor = theme.colors.borderFocus,
   onToggle,
   onOpenSwap,
   progressionHint,
   children,
 }: ExerciseCardProps) {
   return (
-    <View style={[styles.card, expanded && styles.cardExpanded, completed && styles.cardComplete]}>
-      <Pressable onPress={onToggle} style={styles.header}>
+    <View
+      style={[
+        styles.card,
+        { borderLeftColor: accentColor },
+        expanded && styles.cardExpanded,
+        completed && styles.cardComplete,
+      ]}
+    >
+      <Pressable onPress={onToggle} style={({ pressed }) => [styles.header, pressed && styles.pressed]}>
         <View style={styles.headerLeft}>
           <Text style={styles.title}>{title}</Text>
+          <Text style={styles.notesInline}>{notes ?? targetLabel}</Text>
           <View style={styles.metaRow}>
             <Text style={styles.subtitle}>{setSummary}</Text>
             <View style={[styles.statusPill, completed && styles.statusPillComplete]}>
               <Text style={[styles.statusText, completed && styles.statusTextComplete]}>
-                {completed ? 'Complete' : 'In Progress'}
+                {completed ? 'COMPLETE' : 'ACTIVE'}
               </Text>
             </View>
           </View>
         </View>
-        <Text style={styles.toggleText}>{expanded ? 'Hide' : 'Open'}</Text>
+        <Text style={styles.toggleText}>{expanded ? 'HIDE' : 'OPEN'}</Text>
       </Pressable>
 
       {expanded ? (
         <View style={styles.expandedContent}>
-          <View style={styles.metaRow}>
+          <View style={styles.actionRow}>
             <Text style={styles.target}>{targetLabel}</Text>
-            <Pressable onPress={onOpenSwap} style={styles.swapButton}>
-              <Text style={styles.swapText}>Swap Exercise</Text>
+            <Pressable
+              onPress={onOpenSwap}
+              style={({ pressed }) => [styles.swapButton, pressed && styles.pressed]}
+            >
+              <Text style={styles.swapText}>Swap</Text>
             </Pressable>
           </View>
 
-          {notes ? <Text style={styles.notes}>{notes}</Text> : null}
-
-          {progressionHint ? <Text style={styles.hint}>{progressionHint}</Text> : null}
+          {progressionHint ? (
+            <View style={styles.hintBanner}>
+              <Text style={styles.hintText}>UP {progressionHint}</Text>
+            </View>
+          ) : null}
 
           {children}
         </View>
@@ -65,77 +80,41 @@ export function ExerciseCard({
 
 const styles = StyleSheet.create({
   card: {
-    borderRadius: 14,
+    borderRadius: theme.radius.lg,
     borderWidth: 1,
     borderColor: theme.colors.border,
-    backgroundColor: '#0c1422',
+    borderLeftWidth: 4,
+    backgroundColor: theme.colors.bg2,
     overflow: 'hidden',
   },
   cardExpanded: {
-    borderColor: '#3a4f70',
-    backgroundColor: '#0f1829',
+    borderColor: theme.colors.borderFocus,
+    backgroundColor: theme.colors.bg3,
   },
   cardComplete: {
-    borderColor: '#2f6b56',
+    borderColor: theme.colors.accent,
   },
   header: {
-    minHeight: 60,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+    minHeight: 72,
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.md,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    gap: 10,
+    gap: theme.spacing.md,
   },
   headerLeft: {
     flex: 1,
-    gap: 2,
+    gap: 4,
   },
   title: {
     color: theme.colors.textPrimary,
-    fontSize: 17,
+    fontSize: theme.fontSize.lg,
     fontWeight: '800',
   },
-  subtitle: {
-    color: theme.colors.textSecondary,
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  toggleText: {
-    color: theme.colors.info,
-    fontWeight: '800',
-    fontSize: 12,
-    textTransform: 'uppercase',
-    letterSpacing: 0.3,
-  },
-  statusPill: {
-    minHeight: 22,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: '#41577a',
-    backgroundColor: '#15253f',
-    justifyContent: 'center',
-    paddingHorizontal: 8,
-  },
-  statusPillComplete: {
-    borderColor: '#2f6b56',
-    backgroundColor: '#163529',
-  },
-  statusText: {
-    color: '#b9d7ff',
-    fontSize: 10,
-    fontWeight: '800',
-    textTransform: 'uppercase',
-    letterSpacing: 0.2,
-  },
-  statusTextComplete: {
-    color: '#99f0c9',
-  },
-  expandedContent: {
-    borderTopWidth: 1,
-    borderTopColor: '#324a70',
-    padding: 12,
-    gap: 10,
+  notesInline: {
+    color: theme.colors.textMuted,
+    fontSize: theme.fontSize.sm,
   },
   metaRow: {
     flexDirection: 'row',
@@ -143,43 +122,87 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 10,
   },
+  subtitle: {
+    color: theme.colors.textSecondary,
+    fontSize: theme.fontSize.sm,
+    fontWeight: '700',
+  },
+  statusPill: {
+    minHeight: 22,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg1,
+    justifyContent: 'center',
+    paddingHorizontal: 8,
+  },
+  statusPillComplete: {
+    borderColor: theme.colors.accent,
+    backgroundColor: theme.colors.accentDim,
+  },
+  statusText: {
+    color: theme.colors.textMuted,
+    fontSize: theme.fontSize.xs,
+    fontWeight: '800',
+    letterSpacing: 0.3,
+  },
+  statusTextComplete: {
+    color: theme.colors.accent,
+  },
+  toggleText: {
+    color: theme.colors.info,
+    fontWeight: '800',
+    fontSize: theme.fontSize.xs,
+    letterSpacing: 0.5,
+  },
+  expandedContent: {
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.border,
+    padding: theme.spacing.md,
+    gap: theme.spacing.md,
+  },
+  actionRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 10,
+  },
   target: {
-    color: '#d3deef',
-    fontSize: 13,
+    flex: 1,
+    color: theme.colors.textSecondary,
+    fontSize: theme.fontSize.sm,
     fontWeight: '700',
   },
   swapButton: {
-    minHeight: 44,
-    minWidth: 116,
-    borderRadius: 10,
+    minHeight: 38,
+    minWidth: 80,
+    borderRadius: theme.radius.md,
     borderWidth: 1,
-    borderColor: '#456797',
+    borderColor: theme.colors.borderFocus,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#1a2940',
-    paddingHorizontal: 12,
+    backgroundColor: theme.colors.bg1,
+    paddingHorizontal: 10,
   },
   swapText: {
-    color: '#d6e7ff',
+    color: theme.colors.textPrimary,
     fontWeight: '800',
-    fontSize: 12,
-    textTransform: 'uppercase',
-    letterSpacing: 0.2,
+    fontSize: theme.fontSize.sm,
   },
-  notes: {
-    color: theme.colors.textSecondary,
-    fontSize: 12,
-    lineHeight: 18,
-  },
-  hint: {
-    color: theme.colors.success,
-    fontSize: 13,
-    fontWeight: '800',
-    backgroundColor: '#173326',
+  hintBanner: {
     borderWidth: 1,
-    borderColor: '#2d6d53',
-    paddingVertical: 6,
-    paddingHorizontal: 8,
-    borderRadius: 8,
+    borderColor: theme.colors.accent,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.accentDim,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  hintText: {
+    color: theme.colors.accent,
+    fontSize: theme.fontSize.sm,
+    fontWeight: '700',
+  },
+  pressed: {
+    opacity: 0.7,
   },
 });

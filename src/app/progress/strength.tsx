@@ -3,6 +3,7 @@ import { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -10,57 +11,65 @@ import {
 } from 'react-native';
 import { ProgressChart } from '../../components/ProgressChart';
 import { theme } from '../../constants/theme';
-import { getStrengthTrendSeries, listExercises } from '../../db/queries';
+import { getBodyweightLog, getStrengthTrendSeries, listExercises } from '../../db/queries';
 import type { StrengthTrendPoint } from '../../types';
 import { estimateOneRepMax } from '../../utils/oneRepMax';
 
 export default function StrengthTrendsScreen() {
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [exerciseOptions, setExerciseOptions] = useState<Array<{ id: string; name: string }>>([]);
   const [selectedExerciseId, setSelectedExerciseId] = useState<string | null>(null);
   const [series, setSeries] = useState<StrengthTrendPoint[]>([]);
+  const [latestBodyweight, setLatestBodyweight] = useState<number | null>(null);
 
   const loadSeries = useCallback(async (exerciseId: string) => {
     const points = await getStrengthTrendSeries(exerciseId);
     setSeries(points);
   }, []);
 
+  const load = useCallback(async (showLoadingState = true) => {
+    if (showLoadingState) {
+      setLoading(true);
+    }
+
+    try {
+      const [exercises, bodyweightEntries] = await Promise.all([
+        listExercises(),
+        getBodyweightLog(1),
+      ]);
+      setExerciseOptions(exercises);
+      setLatestBodyweight(bodyweightEntries[0]?.weightKg ?? null);
+
+      const defaultExerciseId = selectedExerciseId ?? exercises[0]?.id ?? null;
+      setSelectedExerciseId(defaultExerciseId);
+
+      if (defaultExerciseId) {
+        await loadSeries(defaultExerciseId);
+      } else {
+        setSeries([]);
+      }
+    } finally {
+      if (showLoadingState) {
+        setLoading(false);
+      }
+    }
+  }, [loadSeries, selectedExerciseId]);
+
   useFocusEffect(
     useCallback(() => {
-      let mounted = true;
-
-      const load = async () => {
-        setLoading(true);
-        try {
-          const exercises = await listExercises();
-          if (!mounted) {
-            return;
-          }
-
-          setExerciseOptions(exercises);
-
-          const defaultExerciseId = selectedExerciseId ?? exercises[0]?.id ?? null;
-          setSelectedExerciseId(defaultExerciseId);
-
-          if (defaultExerciseId) {
-            await loadSeries(defaultExerciseId);
-          } else {
-            setSeries([]);
-          }
-        } finally {
-          if (mounted) {
-            setLoading(false);
-          }
-        }
-      };
-
-      void load();
-
-      return () => {
-        mounted = false;
-      };
-    }, [loadSeries, selectedExerciseId])
+      void load(true);
+    }, [load])
   );
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await load(false);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [load]);
 
   const chartPoints = useMemo(
     () =>
@@ -85,6 +94,33 @@ export default function StrengthTrendsScreen() {
       ? latestEstimate - firstEstimate
       : null;
 
+  const targetLines = useMemo(() => {
+    if (!latestBodyweight || latestBodyweight <= 0) {
+      return [] as Array<{ label: string; value: number; color: string }>;
+    }
+
+    const lowercaseName = selectedExerciseName.toLowerCase();
+    const lines: Array<{ label: string; value: number; color: string }> = [];
+
+    if (lowercaseName.includes('bench')) {
+      lines.push({
+        label: `1.0x BW (${latestBodyweight.toFixed(1)} kg)`,
+        value: latestBodyweight,
+        color: theme.colors.info,
+      });
+    }
+
+    if (lowercaseName.includes('squat')) {
+      lines.push({
+        label: `1.25x BW (${(latestBodyweight * 1.25).toFixed(1)} kg)`,
+        value: latestBodyweight * 1.25,
+        color: theme.colors.warning,
+      });
+    }
+
+    return lines;
+  }, [latestBodyweight, selectedExerciseName]);
+
   if (loading) {
     return (
       <View style={styles.centered}>
@@ -94,11 +130,22 @@ export default function StrengthTrendsScreen() {
   }
 
   return (
-    <ScrollView contentContainerStyle={styles.container}>
+    <ScrollView
+      contentContainerStyle={styles.container}
+      refreshControl={
+        <RefreshControl
+          refreshing={refreshing}
+          onRefresh={() => {
+            void onRefresh();
+          }}
+          tintColor={theme.colors.accent}
+        />
+      }
+    >
       <View style={styles.heroCard}>
         <Text style={styles.heroTag}>Strength Trends</Text>
         <Text style={styles.heroTitle}>{selectedExerciseName}</Text>
-        <Text style={styles.heroSubtitle}>Estimated 1RM from top logged set per session.</Text>
+        <Text style={styles.heroSubtitle}>Estimated 1RM by session top set.</Text>
       </View>
 
       <ScrollView
@@ -115,7 +162,11 @@ export default function StrengthTrendsScreen() {
                 setSelectedExerciseId(exercise.id);
                 void loadSeries(exercise.id);
               }}
-              style={[styles.pickerChip, selected && styles.pickerChipSelected]}
+              style={({ pressed }) => [
+                styles.pickerChip,
+                selected && styles.pickerChipSelected,
+                pressed && styles.pressed,
+              ]}
             >
               <Text style={[styles.pickerChipText, selected && styles.pickerChipTextSelected]}>
                 {exercise.name}
@@ -126,12 +177,15 @@ export default function StrengthTrendsScreen() {
       </ScrollView>
 
       <View style={styles.metricsRow}>
-        <View style={styles.metricCard}>
-          <Text style={styles.metricLabel}>Latest e1RM</Text>
-          <Text style={styles.metricValue}>
+        <View style={styles.metricCardWide}>
+          <Text style={styles.metricLabel}>CURRENT ESTIMATED 1RM</Text>
+          <Text style={styles.metricValueHero}>
             {latestEstimate !== null ? `${latestEstimate.toFixed(1)} kg` : '-'}
           </Text>
         </View>
+      </View>
+
+      <View style={styles.metricsRow}>
         <View style={styles.metricCard}>
           <Text style={styles.metricLabel}>Delta</Text>
           <Text
@@ -151,11 +205,21 @@ export default function StrengthTrendsScreen() {
           <Text style={styles.metricLabel}>Sessions</Text>
           <Text style={styles.metricValue}>{series.length}</Text>
         </View>
+        <View style={styles.metricCard}>
+          <Text style={styles.metricLabel}>Bodyweight</Text>
+          <Text style={styles.metricValue}>
+            {latestBodyweight ? `${latestBodyweight.toFixed(1)} kg` : '-'}
+          </Text>
+        </View>
       </View>
 
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Estimated 1RM Curve</Text>
-        <ProgressChart points={chartPoints} />
+        <ProgressChart
+          points={chartPoints}
+          color={theme.colors.accent}
+          targetLines={targetLines}
+        />
       </View>
 
       <View style={styles.card}>
@@ -190,106 +254,122 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: theme.colors.background,
+    backgroundColor: theme.colors.bg1,
   },
   container: {
-    padding: 12,
-    gap: 10,
-    backgroundColor: theme.colors.background,
+    padding: theme.spacing.lg,
+    gap: theme.spacing.md,
+    backgroundColor: theme.colors.bg1,
   },
   heroCard: {
-    borderRadius: 14,
+    borderRadius: theme.radius.lg,
     borderWidth: 1,
-    borderColor: '#36557a',
-    backgroundColor: '#13253e',
-    padding: 12,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg2,
+    padding: theme.spacing.lg,
     gap: 3,
   },
   heroTag: {
-    color: '#afc8e9',
-    fontSize: 11,
+    color: theme.colors.textSecondary,
+    fontSize: theme.fontSize.xs,
     fontWeight: '800',
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
+    letterSpacing: 0.5,
   },
   heroTitle: {
-    color: '#eff5ff',
-    fontSize: 22,
-    fontWeight: '900',
+    color: theme.colors.textPrimary,
+    fontSize: theme.fontSize.xl,
+    fontWeight: '800',
   },
   heroSubtitle: {
-    color: '#b6c9e3',
-    fontSize: 12,
-    fontWeight: '600',
+    color: theme.colors.textMuted,
+    fontSize: theme.fontSize.sm,
   },
   pickerRow: {
     flexDirection: 'row',
-    gap: 8,
+    gap: theme.spacing.sm,
     paddingVertical: 2,
   },
   pickerChip: {
-    minHeight: 40,
+    minHeight: 38,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: '#364d6d',
-    backgroundColor: '#101b2d',
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg2,
     justifyContent: 'center',
     paddingHorizontal: 12,
   },
   pickerChipSelected: {
-    backgroundColor: '#204565',
-    borderColor: '#4092db',
+    backgroundColor: theme.colors.accentDim,
+    borderColor: theme.colors.accent,
   },
   pickerChipText: {
-    color: theme.colors.textPrimary,
-    fontSize: 12,
+    color: theme.colors.textSecondary,
+    fontSize: theme.fontSize.sm,
     fontWeight: '700',
   },
   pickerChipTextSelected: {
-    color: '#d9f0ff',
+    color: theme.colors.accent,
   },
   metricsRow: {
     flexDirection: 'row',
-    gap: 8,
+    gap: theme.spacing.sm,
+  },
+  metricCardWide: {
+    flex: 1,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg2,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    gap: 4,
   },
   metricCard: {
     flex: 1,
-    borderRadius: 12,
+    borderRadius: theme.radius.md,
     borderWidth: 1,
-    borderColor: '#2f486a',
-    backgroundColor: '#111d31',
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg2,
     paddingVertical: 10,
     paddingHorizontal: 10,
     gap: 6,
   },
   metricLabel: {
-    color: '#9eb9db',
-    fontSize: 11,
+    color: theme.colors.textMuted,
+    fontSize: theme.fontSize.xs,
     fontWeight: '700',
-    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  metricValueHero: {
+    color: theme.colors.accent,
+    fontSize: theme.fontSize.hero,
+    lineHeight: 40,
+    fontWeight: '900',
+    fontVariant: ['tabular-nums'],
   },
   metricValue: {
-    color: '#f0f6ff',
-    fontSize: 18,
+    color: theme.colors.textPrimary,
+    fontSize: theme.fontSize.lg,
     fontWeight: '900',
+    fontVariant: ['tabular-nums'],
   },
   metricPositive: {
-    color: '#6de0b3',
+    color: theme.colors.accent,
   },
   metricNegative: {
-    color: '#f4b482',
+    color: theme.colors.zoneOrange,
   },
   card: {
-    borderRadius: 12,
+    borderRadius: theme.radius.md,
     borderWidth: 1,
-    borderColor: '#304868',
-    backgroundColor: '#0f192a',
-    padding: 12,
-    gap: 8,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg2,
+    padding: theme.spacing.md,
+    gap: theme.spacing.sm,
   },
   cardTitle: {
     color: theme.colors.textPrimary,
-    fontSize: 16,
+    fontSize: theme.fontSize.lg,
     fontWeight: '800',
   },
   emptyText: {
@@ -298,10 +378,10 @@ const styles = StyleSheet.create({
   },
   pointRow: {
     minHeight: 46,
-    borderRadius: 10,
+    borderRadius: theme.radius.md,
     borderWidth: 1,
-    borderColor: '#2d4261',
-    backgroundColor: '#121f34',
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg1,
     paddingHorizontal: 10,
     flexDirection: 'row',
     alignItems: 'center',
@@ -309,18 +389,24 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   pointDate: {
-    color: '#bad0ea',
+    color: theme.colors.textSecondary,
     fontWeight: '700',
-    fontSize: 12,
+    fontSize: theme.fontSize.sm,
+    fontVariant: ['tabular-nums'],
   },
   pointText: {
-    color: '#d8e5f8',
+    color: theme.colors.textPrimary,
     fontWeight: '700',
-    fontSize: 12,
+    fontSize: theme.fontSize.sm,
+    fontVariant: ['tabular-nums'],
   },
   pointEstimate: {
-    color: '#79c3ff',
+    color: theme.colors.accent,
     fontWeight: '900',
-    fontSize: 12,
+    fontSize: theme.fontSize.sm,
+    fontVariant: ['tabular-nums'],
+  },
+  pressed: {
+    opacity: 0.7,
   },
 });

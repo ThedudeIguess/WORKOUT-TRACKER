@@ -1,8 +1,11 @@
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Animated,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -16,78 +19,127 @@ import {
   getWeekStats,
   listProgramDayTemplates,
 } from '../db/queries';
-import { getRollingWeekWindow } from '../utils/rollingWeek';
 import type { ActiveWorkoutSummary, DayTemplateWithSlots } from '../types';
+import { getRollingWeekWindow } from '../utils/rollingWeek';
 
 interface QuickLinkItem {
   id: string;
   title: string;
-  subtitle: string;
   route: '/progress/volume' | '/workout/history' | '/progress/strength' | '/settings';
 }
 
 const quickLinks: QuickLinkItem[] = [
-  {
-    id: 'volume',
-    title: 'Volume Dashboard',
-    subtitle: 'Effective sets by muscle',
-    route: '/progress/volume',
-  },
-  {
-    id: 'history',
-    title: 'Workout History',
-    subtitle: 'Completed sessions',
-    route: '/workout/history',
-  },
-  {
-    id: 'strength',
-    title: 'Strength Trends',
-    subtitle: 'Estimated 1RM over time',
-    route: '/progress/strength',
-  },
-  {
-    id: 'settings',
-    title: 'Settings',
-    subtitle: 'Export and preferences',
-    route: '/settings',
-  },
+  { id: 'volume', title: 'Volume', route: '/progress/volume' },
+  { id: 'history', title: 'History', route: '/workout/history' },
+  { id: 'strength', title: 'Strength', route: '/progress/strength' },
+  { id: 'settings', title: 'Settings', route: '/settings' },
 ];
+
+function shortExerciseName(name: string): string {
+  return name
+    .replace('Barbell ', '')
+    .replace('Dumbbell ', '')
+    .replace('Machine ', '')
+    .replace('(Glute Focus)', '');
+}
 
 export default function HomeScreen() {
   const router = useRouter();
+  const pulse = useRef(new Animated.Value(1)).current;
+
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [activeWorkout, setActiveWorkout] = useState<ActiveWorkoutSummary | null>(null);
   const [nextDayTemplate, setNextDayTemplate] = useState<DayTemplateWithSlots | null>(null);
-  const [allDayTemplates, setAllDayTemplates] = useState<DayTemplateWithSlots[]>([]);
-  const [showDayPicker, setShowDayPicker] = useState(false);
+  const [dayTemplates, setDayTemplates] = useState<DayTemplateWithSlots[]>([]);
+  const [firstWorkoutAnchor, setFirstWorkoutAnchor] = useState<string | null>(null);
   const [weekLabel, setWeekLabel] = useState('Week 0');
   const [weekRangeLabel, setWeekRangeLabel] = useState('');
   const [weekStats, setWeekStats] = useState({ workoutsThisWeek: 0, setsThisWeek: 0 });
+  const [showBackdatePicker, setShowBackdatePicker] = useState(false);
+  const [showDayPicker, setShowDayPicker] = useState(false);
+  const [pendingBackdateIso, setPendingBackdateIso] = useState<string | null>(null);
+  const [backdateDate, setBackdateDate] = useState(() => {
+    const value = new Date();
+    value.setDate(value.getDate() - 1);
+    value.setHours(12, 0, 0, 0);
+    return value;
+  });
+
+  useEffect(() => {
+    const animation = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, {
+          toValue: 1.25,
+          duration: 700,
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulse, {
+          toValue: 1,
+          duration: 700,
+          useNativeDriver: true,
+        }),
+      ])
+    );
+
+    animation.start();
+    return () => {
+      animation.stop();
+    };
+  }, [pulse]);
+
+  const clampBackdate = useCallback(
+    (value: Date) => {
+      const maxDate = new Date();
+      maxDate.setHours(23, 59, 59, 999);
+
+      const minDate = firstWorkoutAnchor ? new Date(firstWorkoutAnchor) : null;
+
+      if (value.getTime() > maxDate.getTime()) {
+        return maxDate;
+      }
+
+      if (minDate && value.getTime() < minDate.getTime()) {
+        return minDate;
+      }
+
+      return value;
+    },
+    [firstWorkoutAnchor]
+  );
 
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [active, nextTemplate, anchor, allTemplates] = await Promise.all([
+      const [active, nextTemplate, templates, anchor] = await Promise.all([
         getActiveWorkout(),
         getNextDayTemplate(),
-        getFirstWorkoutAnchor(),
         listProgramDayTemplates(),
+        getFirstWorkoutAnchor(),
       ]);
 
       setActiveWorkout(active);
       setNextDayTemplate(nextTemplate);
-      setAllDayTemplates(allTemplates);
+      setDayTemplates(templates);
+      setFirstWorkoutAnchor(anchor);
 
       const nowIso = new Date().toISOString();
       const weekWindow = getRollingWeekWindow(nowIso, anchor ?? nowIso);
-
-      setWeekLabel(`Week ${weekWindow.weekNumber + 1}`);
       const start = new Date(weekWindow.startIso).toLocaleDateString();
       const end = new Date(weekWindow.endIso).toLocaleDateString();
+
+      setWeekLabel(`Week ${weekWindow.weekNumber + 1}`);
       setWeekRangeLabel(`${start} - ${end}`);
 
       const stats = await getWeekStats(weekWindow.startIso, weekWindow.endIso);
       setWeekStats(stats);
+
+      if (anchor) {
+        const anchorDate = new Date(anchor);
+        setBackdateDate((current) =>
+          current.getTime() < anchorDate.getTime() ? anchorDate : current
+        );
+      }
     } finally {
       setLoading(false);
     }
@@ -99,6 +151,25 @@ export default function HomeScreen() {
     }, [refresh])
   );
 
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await refresh();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refresh]);
+
+  const dayPickerOptions = useMemo(() => {
+    if (dayTemplates.length > 0) {
+      return dayTemplates;
+    }
+
+    return nextDayTemplate ? [nextDayTemplate] : [];
+  }, [dayTemplates, nextDayTemplate]);
+
+  const defaultDayNumber = nextDayTemplate?.dayNumber ?? dayPickerOptions[0]?.dayNumber ?? 1;
+
   const startButtonLabel = useMemo(
     () => (activeWorkout ? 'Resume Workout' : 'Start Workout'),
     [activeWorkout]
@@ -107,6 +178,28 @@ export default function HomeScreen() {
   const nextWorkoutLabel = activeWorkout
     ? `Day ${activeWorkout.dayNumber} - ${activeWorkout.dayName}`
     : `Day ${nextDayTemplate?.dayNumber ?? 1} - ${nextDayTemplate?.dayName ?? 'Lower A'}`;
+
+  const nextTemplateForSummary =
+    (activeWorkout
+      ? dayTemplates.find((day) => day.dayNumber === activeWorkout.dayNumber)
+      : nextDayTemplate) ?? nextDayTemplate;
+
+  const nextExerciseSummary = nextTemplateForSummary
+    ? nextTemplateForSummary.slots
+        .slice(0, 4)
+        .map((slot) => shortExerciseName(slot.defaultExerciseName))
+        .join(' • ')
+    : 'No exercises loaded';
+
+  const quickLinkPreview = useMemo(
+    () => ({
+      volume: `${weekStats.setsThisWeek}`,
+      history: `${weekStats.workoutsThisWeek}`,
+      strength: activeWorkout ? 'LIVE' : 'e1RM',
+      settings: 'LOCAL',
+    }),
+    [activeWorkout, weekStats]
+  );
 
   const handleStartPress = () => {
     if (activeWorkout) {
@@ -120,16 +213,26 @@ export default function HomeScreen() {
       return;
     }
 
-    if (!nextDayTemplate) {
+    if (dayPickerOptions.length === 0) {
       return;
     }
 
-    router.push({
-      pathname: '/workout/[dayId]',
-      params: {
-        dayId: String(nextDayTemplate.dayNumber),
-      },
-    });
+    setPendingBackdateIso(null);
+    setShowDayPicker(true);
+  };
+
+  const openBackdatePicker = () => {
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    yesterday.setHours(12, 0, 0, 0);
+    setBackdateDate(clampBackdate(yesterday));
+    setShowBackdatePicker(true);
+  };
+
+  const confirmBackdateSelection = () => {
+    setPendingBackdateIso(clampBackdate(backdateDate).toISOString());
+    setShowBackdatePicker(false);
+    setShowDayPicker(true);
   };
 
   if (loading) {
@@ -141,151 +244,267 @@ export default function HomeScreen() {
   }
 
   return (
-    <ScrollView contentContainerStyle={styles.container}>
-      <View style={styles.heroCard}>
-        <Text style={styles.heroTag}>Hybrid Bodybuilding</Text>
-        <Text style={styles.heroWeek}>{weekLabel}</Text>
-        <Text style={styles.heroRange}>{weekRangeLabel}</Text>
-      </View>
+    <View style={styles.screen}>
+      <ScrollView
+        contentContainerStyle={styles.container}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => {
+              void onRefresh();
+            }}
+            tintColor={theme.colors.accent}
+          />
+        }
+      >
+        <View style={styles.heroCard}>
+          <Text style={styles.heroProgram}>HYBRID BODYBUILDING 2.0</Text>
+          <Text style={styles.heroWeekNumber}>{weekLabel.replace('Week ', '')}</Text>
+          <Text style={styles.heroWeekLabel}>{weekLabel.toUpperCase()}</Text>
+          <Text style={styles.heroRange}>{weekRangeLabel}</Text>
+        </View>
 
-      <View style={styles.nextCard}>
-        <View style={styles.nextHeaderRow}>
-          <Text style={styles.nextTitle}>Next Session</Text>
-          <View
-            style={[
-              styles.statusChip,
-              activeWorkout ? styles.statusChipActive : styles.statusChipIdle,
-            ]}
-          >
-            <Text
-              style={[
-                styles.statusChipText,
-                activeWorkout ? styles.statusChipTextActive : styles.statusChipTextIdle,
-              ]}
-            >
-              {activeWorkout ? 'IN PROGRESS' : 'READY'}
-            </Text>
+        <View style={styles.statsRow}>
+          <View style={styles.statCard}>
+            <Text style={styles.statLabel}>WORKOUTS THIS WEEK</Text>
+            <Text style={styles.statValue}>{weekStats.workoutsThisWeek}</Text>
+          </View>
+          <View style={styles.statCard}>
+            <Text style={styles.statLabel}>SETS THIS WEEK</Text>
+            <Text style={styles.statValue}>{weekStats.setsThisWeek}</Text>
           </View>
         </View>
-        <Text style={styles.nextWorkoutLabel}>{nextWorkoutLabel}</Text>
-      </View>
 
-      <Pressable onPress={handleStartPress} style={styles.startButton}>
-        <Text style={styles.startButtonText}>{startButtonLabel}</Text>
-      </Pressable>
-
-      {!activeWorkout && allDayTemplates.length > 1 ? (
-        <View style={styles.dayPickerCard}>
-          <Pressable
-            onPress={() => setShowDayPicker(!showDayPicker)}
-            style={styles.dayPickerToggle}
-          >
-            <Text style={styles.dayPickerToggleText}>
-              {showDayPicker ? 'Hide Day Picker' : 'Pick a Different Day'}
-            </Text>
-          </Pressable>
-          {showDayPicker ? (
-            <View style={styles.dayPickerGrid}>
-              {allDayTemplates.map((template) => {
-                const isNext = template.dayNumber === nextDayTemplate?.dayNumber;
-                return (
-                  <Pressable
-                    key={template.id}
-                    onPress={() => {
-                      router.push({
-                        pathname: '/workout/[dayId]',
-                        params: { dayId: String(template.dayNumber) },
-                      });
-                    }}
-                    style={[styles.dayPickerChip, isNext && styles.dayPickerChipActive]}
-                  >
-                    <Text style={[styles.dayPickerChipText, isNext && styles.dayPickerChipTextActive]}>
-                      Day {template.dayNumber}
-                    </Text>
-                    <Text style={styles.dayPickerChipName}>{template.dayName}</Text>
-                  </Pressable>
-                );
-              })}
+        <View style={styles.nextCard}>
+          <View style={styles.nextHeaderRow}>
+            <Text style={styles.nextTitle}>NEXT WORKOUT</Text>
+            <View style={styles.statusChip}>
+              <Animated.View
+                style={[
+                  styles.statusDot,
+                  activeWorkout ? styles.statusDotActive : styles.statusDotReady,
+                  { transform: [{ scale: pulse }] },
+                ]}
+              />
+              <Text style={styles.statusText}>{activeWorkout ? 'IN PROGRESS' : 'READY'}</Text>
             </View>
-          ) : null}
-        </View>
-      ) : null}
-
-      <View style={styles.statsRow}>
-        <View style={styles.statCard}>
-          <Text style={styles.statLabel}>Workouts This Week</Text>
-          <Text style={styles.statValue}>{weekStats.workoutsThisWeek}</Text>
+          </View>
+          <Text style={styles.nextWorkoutLabel}>{nextWorkoutLabel}</Text>
+          <Text numberOfLines={1} style={styles.nextSummary}>
+            {nextExerciseSummary}
+          </Text>
         </View>
 
-        <View style={styles.statCard}>
-          <Text style={styles.statLabel}>Sets This Week</Text>
-          <Text style={styles.statValue}>{weekStats.setsThisWeek}</Text>
-        </View>
-      </View>
+        <Pressable
+          onPress={handleStartPress}
+          style={({ pressed }) => [styles.startButton, pressed && styles.pressed]}
+        >
+          <Text style={styles.startButtonText}>{startButtonLabel}</Text>
+        </Pressable>
 
-      <View style={styles.quickLinksCard}>
-        <Text style={styles.quickLinksTitle}>Explore</Text>
-        <View style={styles.quickLinksGrid}>
+        {!activeWorkout ? (
+          <Pressable
+            onPress={openBackdatePicker}
+            style={({ pressed }) => [styles.backdateButton, pressed && styles.pressed]}
+          >
+            <Text style={styles.backdateButtonText}>Log Past Workout</Text>
+          </Pressable>
+        ) : null}
+
+        <View style={styles.quickGrid}>
           {quickLinks.map((item) => (
             <Pressable
               key={item.id}
               onPress={() => router.push(item.route)}
-              style={styles.quickLinkButton}
+              style={({ pressed }) => [styles.quickCard, pressed && styles.pressed]}
             >
-              <Text style={styles.quickLinkTitle}>{item.title}</Text>
-              <Text style={styles.quickLinkSubtitle}>{item.subtitle}</Text>
+              <Text style={styles.quickValue}>{quickLinkPreview[item.id as keyof typeof quickLinkPreview]}</Text>
+              <Text style={styles.quickTitle}>{item.title}</Text>
             </Pressable>
           ))}
         </View>
-      </View>
-    </ScrollView>
+      </ScrollView>
+
+      {showBackdatePicker ? (
+        <View style={styles.sheetBackdrop}>
+          <Pressable
+            style={styles.sheetDismissArea}
+            onPress={() => setShowBackdatePicker(false)}
+          />
+          <View style={styles.sheet}>
+            <Text style={styles.sheetTitle}>Pick Date</Text>
+            <Text style={styles.sheetSubtitle}>Choose a past date for this workout.</Text>
+            <DateTimePicker
+              value={backdateDate}
+              mode="date"
+              maximumDate={new Date()}
+              minimumDate={firstWorkoutAnchor ? new Date(firstWorkoutAnchor) : undefined}
+              onChange={(_, selectedDate) => {
+                if (!selectedDate) {
+                  return;
+                }
+                setBackdateDate(clampBackdate(selectedDate));
+              }}
+            />
+            <View style={styles.sheetActionsRow}>
+              <Pressable
+                onPress={() => setShowBackdatePicker(false)}
+                style={({ pressed }) => [
+                  styles.sheetActionButton,
+                  styles.secondarySheetButton,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Text style={styles.secondarySheetButtonText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={confirmBackdateSelection}
+                style={({ pressed }) => [
+                  styles.sheetActionButton,
+                  styles.primarySheetButton,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Text style={styles.primarySheetButtonText}>Pick Workout Day</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      ) : null}
+
+      {showDayPicker ? (
+        <View style={styles.sheetBackdrop}>
+          <Pressable
+            style={styles.sheetDismissArea}
+            onPress={() => {
+              setShowDayPicker(false);
+              setPendingBackdateIso(null);
+            }}
+          />
+          <View style={styles.sheet}>
+            <Text style={styles.sheetTitle}>Choose Workout Day</Text>
+            <Text style={styles.sheetSubtitle}>
+              {pendingBackdateIso
+                ? `Logging for ${new Date(pendingBackdateIso).toLocaleDateString()}`
+                : `Default is Day ${defaultDayNumber}.`}
+            </Text>
+
+            {dayPickerOptions.map((day) => (
+              <Pressable
+                key={day.id}
+                onPress={() => {
+                  setShowDayPicker(false);
+                  router.push({
+                    pathname: '/workout/[dayId]',
+                    params: pendingBackdateIso
+                      ? {
+                          dayId: String(day.dayNumber),
+                          backdateIso: pendingBackdateIso,
+                        }
+                      : {
+                          dayId: String(day.dayNumber),
+                        },
+                  });
+                  setPendingBackdateIso(null);
+                }}
+                style={({ pressed }) => [
+                  styles.sheetOption,
+                  day.dayNumber === defaultDayNumber && styles.sheetOptionDefault,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Text style={styles.sheetOptionText}>
+                  Day {day.dayNumber} - {day.dayName}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        </View>
+      ) : null}
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  screen: {
+    flex: 1,
+    backgroundColor: theme.colors.bg1,
+  },
   loadingContainer: {
     flex: 1,
-    backgroundColor: theme.colors.background,
+    backgroundColor: theme.colors.bg1,
     alignItems: 'center',
     justifyContent: 'center',
   },
   container: {
-    padding: 16,
-    gap: 12,
-    backgroundColor: theme.colors.background,
+    padding: theme.spacing.lg,
+    gap: theme.spacing.md,
+    backgroundColor: theme.colors.bg1,
   },
   heroCard: {
-    borderRadius: 16,
+    borderRadius: theme.radius.xl,
     borderWidth: 1,
-    borderColor: '#35547a',
-    backgroundColor: '#13243c',
-    padding: 14,
-    gap: 2,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg2,
+    padding: theme.spacing.xl,
+    gap: theme.spacing.xs,
   },
-  heroTag: {
-    color: '#aac6e8',
-    fontSize: 11,
-    fontWeight: '800',
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
+  heroProgram: {
+    color: theme.colors.textSecondary,
+    fontSize: theme.fontSize.sm,
+    fontWeight: '700',
+    letterSpacing: 0.8,
   },
-  heroWeek: {
-    color: '#eff6ff',
-    fontSize: 28,
+  heroWeekNumber: {
+    color: theme.colors.textPrimary,
+    fontSize: theme.fontSize.hero,
     fontWeight: '900',
+    fontVariant: ['tabular-nums'],
+    lineHeight: 40,
+  },
+  heroWeekLabel: {
+    color: theme.colors.accent,
+    fontSize: theme.fontSize.sm,
+    fontWeight: '800',
+    letterSpacing: 0.6,
   },
   heroRange: {
-    color: '#b4c9e5',
-    fontSize: 13,
+    color: theme.colors.textMuted,
+    fontSize: theme.fontSize.sm,
+    fontVariant: ['tabular-nums'],
+  },
+  statsRow: {
+    flexDirection: 'row',
+    gap: theme.spacing.sm,
+  },
+  statCard: {
+    flex: 1,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg2,
+    padding: theme.spacing.md,
+    gap: theme.spacing.xs,
+  },
+  statLabel: {
+    color: theme.colors.textMuted,
+    fontSize: theme.fontSize.xs,
     fontWeight: '700',
+    letterSpacing: 0.5,
+  },
+  statValue: {
+    color: theme.colors.textPrimary,
+    fontSize: theme.fontSize.xxl,
+    fontWeight: '900',
+    fontVariant: ['tabular-nums'],
   },
   nextCard: {
-    borderRadius: 14,
+    borderRadius: theme.radius.lg,
     borderWidth: 1,
-    borderColor: '#304768',
-    backgroundColor: '#0f1929',
-    padding: 12,
-    gap: 6,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg2,
+    padding: theme.spacing.md,
+    gap: theme.spacing.sm,
   },
   nextHeaderRow: {
     flexDirection: 'row',
@@ -294,118 +513,182 @@ const styles = StyleSheet.create({
   },
   nextTitle: {
     color: theme.colors.textSecondary,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    fontSize: 11,
-    letterSpacing: 0.4,
+    fontSize: theme.fontSize.xs,
+    fontWeight: '800',
+    letterSpacing: 0.5,
   },
   statusChip: {
-    minHeight: 24,
+    flexDirection: 'row',
+    alignItems: 'center',
     borderRadius: 999,
     borderWidth: 1,
-    justifyContent: 'center',
-    paddingHorizontal: 9,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg3,
+    paddingHorizontal: 10,
+    minHeight: 28,
+    gap: 6,
   },
-  statusChipActive: {
-    borderColor: '#4ea0df',
-    backgroundColor: '#173659',
+  statusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 999,
   },
-  statusChipIdle: {
-    borderColor: '#2f6b56',
-    backgroundColor: '#16362b',
+  statusDotReady: {
+    backgroundColor: theme.colors.accent,
   },
-  statusChipText: {
-    fontSize: 10,
-    fontWeight: '900',
-    letterSpacing: 0.2,
+  statusDotActive: {
+    backgroundColor: theme.colors.info,
   },
-  statusChipTextActive: {
-    color: '#cae8ff',
-  },
-  statusChipTextIdle: {
-    color: '#b4efcf',
+  statusText: {
+    color: theme.colors.textSecondary,
+    fontSize: theme.fontSize.xs,
+    fontWeight: '800',
+    letterSpacing: 0.3,
   },
   nextWorkoutLabel: {
     color: theme.colors.textPrimary,
-    fontSize: 20,
-    fontWeight: '900',
+    fontSize: theme.fontSize.xl,
+    fontWeight: '800',
+  },
+  nextSummary: {
+    color: theme.colors.textMuted,
+    fontSize: theme.fontSize.sm,
+    lineHeight: 18,
   },
   startButton: {
-    minHeight: 58,
-    borderRadius: 14,
+    minHeight: 56,
+    borderRadius: theme.radius.lg,
     backgroundColor: theme.colors.accent,
     alignItems: 'center',
     justifyContent: 'center',
   },
   startButtonText: {
-    color: '#071910',
-    fontSize: 20,
+    color: '#03241d',
+    fontSize: theme.fontSize.lg,
     fontWeight: '900',
+    letterSpacing: 0.3,
   },
-  statsRow: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-  statCard: {
-    flex: 1,
-    borderRadius: 14,
+  backdateButton: {
+    minHeight: 48,
+    borderRadius: theme.radius.md,
     borderWidth: 1,
-    borderColor: '#2f4668',
-    backgroundColor: '#0f1a2b',
-    padding: 12,
-    gap: 8,
+    borderColor: theme.colors.borderFocus,
+    backgroundColor: theme.colors.bg2,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  statLabel: {
-    color: '#9ab6d9',
-    fontSize: 11,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-  },
-  statValue: {
-    color: '#eef5ff',
-    fontSize: 26,
-    fontWeight: '900',
-  },
-  quickLinksCard: {
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: '#304767',
-    backgroundColor: '#0f192a',
-    padding: 12,
-    gap: 10,
-  },
-  quickLinksTitle: {
-    color: theme.colors.textPrimary,
-    fontSize: 15,
+  backdateButtonText: {
+    color: theme.colors.textSecondary,
     fontWeight: '800',
+    fontSize: theme.fontSize.sm,
+    letterSpacing: 0.3,
   },
-  quickLinksGrid: {
+  quickGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 8,
+    gap: theme.spacing.sm,
   },
-  quickLinkButton: {
+  quickCard: {
     flexBasis: '48%',
     flexGrow: 1,
-    minHeight: 68,
-    borderRadius: 12,
+    borderRadius: theme.radius.md,
     borderWidth: 1,
-    borderColor: '#395479',
-    backgroundColor: '#14233a',
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg2,
+    minHeight: 82,
+    padding: theme.spacing.md,
     justifyContent: 'center',
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    gap: 2,
+    gap: 3,
   },
-  quickLinkTitle: {
-    color: '#e5efff',
+  quickValue: {
+    color: theme.colors.accent,
+    fontSize: theme.fontSize.lg,
+    fontWeight: '900',
+    fontVariant: ['tabular-nums'],
+    letterSpacing: 0.4,
+  },
+  quickTitle: {
+    color: theme.colors.textSecondary,
+    fontSize: theme.fontSize.sm,
+    fontWeight: '700',
+  },
+  pressed: {
+    opacity: 0.7,
+  },
+  sheetBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'flex-end',
+  },
+  sheetDismissArea: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.58)',
+  },
+  sheet: {
+    borderTopLeftRadius: theme.radius.xl,
+    borderTopRightRadius: theme.radius.xl,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderBottomWidth: 0,
+    backgroundColor: theme.colors.bg2,
+    padding: theme.spacing.lg,
+    gap: theme.spacing.sm,
+  },
+  sheetTitle: {
+    color: theme.colors.textPrimary,
+    fontSize: theme.fontSize.xl,
     fontWeight: '800',
-    fontSize: 13,
   },
-  quickLinkSubtitle: {
-    color: '#a4bfdc',
-    fontWeight: '600',
-    fontSize: 11,
+  sheetSubtitle: {
+    color: theme.colors.textSecondary,
+    fontSize: theme.fontSize.sm,
+  },
+  sheetActionsRow: {
+    flexDirection: 'row',
+    gap: theme.spacing.sm,
+  },
+  sheetActionButton: {
+    flex: 1,
+    minHeight: 46,
+    borderRadius: theme.radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: theme.spacing.md,
+  },
+  primarySheetButton: {
+    backgroundColor: theme.colors.accent,
+  },
+  primarySheetButtonText: {
+    color: '#03241d',
+    fontWeight: '900',
+    fontSize: theme.fontSize.sm,
+  },
+  secondarySheetButton: {
+    borderWidth: 1,
+    borderColor: theme.colors.borderFocus,
+    backgroundColor: theme.colors.bg3,
+  },
+  secondarySheetButtonText: {
+    color: theme.colors.textPrimary,
+    fontWeight: '800',
+    fontSize: theme.fontSize.sm,
+  },
+  sheetOption: {
+    minHeight: 46,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    justifyContent: 'center',
+    paddingHorizontal: theme.spacing.md,
+    backgroundColor: theme.colors.bg3,
+  },
+  sheetOptionDefault: {
+    borderColor: theme.colors.accent,
+    backgroundColor: theme.colors.accentDim,
+  },
+  sheetOptionText: {
+    color: theme.colors.textPrimary,
+    fontWeight: '700',
+    fontSize: theme.fontSize.sm,
   },
   dayPickerCard: {
     borderRadius: 14,

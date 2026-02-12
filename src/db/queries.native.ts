@@ -41,6 +41,7 @@ interface DayTemplateSlotRow {
   slot_order: number;
   default_exercise_id: string;
   default_exercise_name: string;
+  input_mode: 'reps' | 'timed';
   target_sets: number;
   target_rep_low: number;
   target_rep_high: number;
@@ -259,11 +260,11 @@ export async function createWorkoutSession(input: {
   phaseId?: string;
   prsScore: number | null;
   bodyweightKg: number | null;
-  startedAt?: string;
+  startedAtOverride?: string;
 }): Promise<{ workoutId: string }> {
   return withDatabase('createWorkoutSession', async (database) => {
     const workoutId = generateWorkoutId();
-    const startedAt = input.startedAt ?? new Date().toISOString();
+    const startedAt = input.startedAtOverride ?? new Date().toISOString();
     const phaseId = input.phaseId ?? HYBRID_PHASE_1_ID;
 
     await database.withExclusiveTransactionAsync(async (transaction) => {
@@ -350,6 +351,7 @@ export async function logSet(input: {
   effortLabel: EffortLabel;
   isWarmup: boolean;
   notes: string | null;
+  loggedAtOverride?: string;
 }): Promise<{ setId: number }> {
   return withDatabase('logSet', async (database) => {
     const setOrderRow = await database.getFirstAsync<{ next_order: number }>(
@@ -360,7 +362,7 @@ export async function logSet(input: {
     );
 
     const setOrder = setOrderRow?.next_order ?? 1;
-    const nowIso = new Date().toISOString();
+    const nowIso = input.loggedAtOverride ?? new Date().toISOString();
 
     const result = await database.runAsync(
       `INSERT INTO sets (
@@ -541,6 +543,7 @@ async function getDayTemplateSlots(
       tes.slot_order,
       tes.default_exercise_id,
       e.name AS default_exercise_name,
+      tes.input_mode,
       tes.target_sets,
       tes.target_rep_low,
       tes.target_rep_high,
@@ -570,6 +573,7 @@ async function getDayTemplateSlots(
         slotOrder: row.slot_order,
         defaultExerciseId: row.default_exercise_id,
         defaultExerciseName: row.default_exercise_name,
+        inputMode: row.input_mode,
         targetSets: row.target_sets,
         targetRepLow: row.target_rep_low,
         targetRepHigh: row.target_rep_high,
@@ -1068,6 +1072,100 @@ export async function setExerciseActive(input: {
        WHERE id = ?;`,
       [input.isActive ? 1 : 0, input.exerciseId]
     );
+  });
+}
+
+export async function insertCustomExercise(exercise: {
+  id: string;
+  name: string;
+  category: Exercise['category'];
+  equipment: Exercise['equipment'];
+}): Promise<void> {
+  await withDatabase('insertCustomExercise', async (database) => {
+    await database.runAsync(
+      `INSERT INTO exercises (id, name, category, equipment, is_active)
+       VALUES (?, ?, ?, ?, 1);`,
+      [exercise.id, exercise.name, exercise.category, exercise.equipment]
+    );
+  });
+}
+
+export async function insertExerciseMuscleMappings(mappings: {
+  exerciseId: string;
+  muscleGroup: string;
+  role: MuscleRole;
+}[]): Promise<void> {
+  await withDatabase('insertExerciseMuscleMappings', async (database) => {
+    await database.withExclusiveTransactionAsync(async (transaction) => {
+      for (const mapping of mappings) {
+        await transaction.runAsync(
+          `INSERT INTO exercise_muscle_mappings (exercise_id, muscle_group, role)
+           VALUES (?, ?, ?)
+           ON CONFLICT(exercise_id, muscle_group) DO UPDATE SET role = excluded.role;`,
+          [mapping.exerciseId, mapping.muscleGroup, mapping.role]
+        );
+      }
+    });
+  });
+}
+
+export async function addSlotAlternate(slotId: number, exerciseId: string): Promise<void> {
+  await withDatabase('addSlotAlternate', async (database) => {
+    await database.runAsync(
+      `INSERT OR IGNORE INTO slot_alternate_exercises (slot_id, exercise_id)
+       VALUES (?, ?);`,
+      [slotId, exerciseId]
+    );
+  });
+}
+
+export async function updateCustomExerciseDefinition(input: {
+  exerciseId: string;
+  name: string;
+  category: Exercise['category'];
+}): Promise<void> {
+  if (!input.exerciseId.startsWith('custom-')) {
+    throw new Error('Only custom exercises can be edited.');
+  }
+
+  await withDatabase('updateCustomExerciseDefinition', async (database) => {
+    await database.runAsync(
+      `UPDATE exercises
+       SET name = ?, category = ?
+       WHERE id = ?;`,
+      [input.name, input.category, input.exerciseId]
+    );
+  });
+}
+
+export async function deleteCustomExercise(exerciseId: string): Promise<void> {
+  if (!exerciseId.startsWith('custom-')) {
+    throw new Error('Only custom exercises can be deleted.');
+  }
+
+  await withDatabase('deleteCustomExercise', async (database) => {
+    const usageRow = await database.getFirstAsync<{ usage_count: number }>(
+      `SELECT COUNT(*) AS usage_count
+       FROM sets
+       WHERE exercise_id = ?;`,
+      [exerciseId]
+    );
+
+    if ((usageRow?.usage_count ?? 0) > 0) {
+      throw new Error('Cannot delete a custom exercise that already has logged sets.');
+    }
+
+    await database.withExclusiveTransactionAsync(async (transaction) => {
+      await transaction.runAsync(
+        'DELETE FROM slot_alternate_exercises WHERE exercise_id = ?;',
+        [exerciseId]
+      );
+      await transaction.runAsync(
+        'DELETE FROM exercise_muscle_mappings WHERE exercise_id = ?;',
+        [exerciseId]
+      );
+      await transaction.runAsync('DELETE FROM exercises WHERE id = ?;', [exerciseId]);
+    });
   });
 }
 

@@ -2,6 +2,7 @@ import { useFocusEffect } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -16,15 +17,16 @@ import { calculateVolumeForDateRange } from '../../utils/volumeCalculator';
 
 const zoneOrder: VolumeZone[] = ['RED', 'YELLOW', 'GREEN', 'AMBER', 'ORANGE'];
 const zoneColor: Record<VolumeZone, string> = {
-  RED: '#ff6b6b',
-  YELLOW: '#f3c969',
-  GREEN: '#45d6a8',
-  AMBER: '#f0a561',
-  ORANGE: '#ff8a5a',
+  RED: theme.colors.zoneRed,
+  YELLOW: theme.colors.zoneYellow,
+  GREEN: theme.colors.zoneGreen,
+  AMBER: theme.colors.zoneAmber,
+  ORANGE: theme.colors.zoneOrange,
 };
+
 const zoneLabel: Record<VolumeZone, string> = {
   RED: 'Under MEV',
-  YELLOW: 'MEV to Opt',
+  YELLOW: 'MEV to Optimal',
   GREEN: 'Optimal',
   AMBER: 'High',
   ORANGE: 'Above MRV',
@@ -32,50 +34,55 @@ const zoneLabel: Record<VolumeZone, string> = {
 
 export default function VolumeDashboardScreen() {
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [rangeLabel, setRangeLabel] = useState('');
   const [weekLabel, setWeekLabel] = useState('Week 1');
   const [results, setResults] = useState<MuscleVolumeResult[]>([]);
 
+  const load = useCallback(async (showLoadingState = true) => {
+    if (showLoadingState) {
+      setLoading(true);
+    }
+
+    try {
+      const anchor = await getFirstWorkoutAnchor();
+      const nowIso = new Date().toISOString();
+      const weekWindow = getRollingWeekWindow(nowIso, anchor ?? nowIso);
+
+      const start = new Date(weekWindow.startIso);
+      const end = new Date(weekWindow.endIso);
+
+      const data = await calculateVolumeForDateRange(
+        weekWindow.startIso,
+        weekWindow.endIso
+      );
+
+      setWeekLabel(`Week ${weekWindow.weekNumber + 1}`);
+      setRangeLabel(
+        `${start.toLocaleDateString()} - ${end.toLocaleDateString()}`
+      );
+      setResults(data);
+    } finally {
+      if (showLoadingState) {
+        setLoading(false);
+      }
+    }
+  }, []);
+
   useFocusEffect(
     useCallback(() => {
-      let mounted = true;
-
-      const load = async () => {
-        setLoading(true);
-        try {
-          const anchor = await getFirstWorkoutAnchor();
-          const nowIso = new Date().toISOString();
-          const weekWindow = getRollingWeekWindow(nowIso, anchor ?? nowIso);
-
-          const start = new Date(weekWindow.startIso);
-          const end = new Date(weekWindow.endIso);
-
-          const data = await calculateVolumeForDateRange(
-            weekWindow.startIso,
-            weekWindow.endIso
-          );
-
-          if (mounted) {
-            setWeekLabel(`Week ${weekWindow.weekNumber + 1}`);
-            setRangeLabel(
-              `${start.toLocaleDateString()} - ${end.toLocaleDateString()}`
-            );
-            setResults(data);
-          }
-        } finally {
-          if (mounted) {
-            setLoading(false);
-          }
-        }
-      };
-
-      void load();
-
-      return () => {
-        mounted = false;
-      };
-    }, [])
+      void load(true);
+    }, [load])
   );
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await load(false);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [load]);
 
   const maxDisplayValue = Math.max(
     14,
@@ -85,10 +92,16 @@ export default function VolumeDashboardScreen() {
   const sortedResults = useMemo(
     () =>
       [...results].sort((left, right) => {
+        const zoneDelta = zoneOrder.indexOf(left.zone) - zoneOrder.indexOf(right.zone);
+        if (zoneDelta !== 0) {
+          return zoneDelta;
+        }
+
         const valueDelta = right.effectiveSets - left.effectiveSets;
         if (valueDelta !== 0) {
           return valueDelta;
         }
+
         return left.displayName.localeCompare(right.displayName);
       }),
     [results]
@@ -110,6 +123,8 @@ export default function VolumeDashboardScreen() {
     return counts;
   }, [results]);
 
+  const optimalCount = zoneCounts.GREEN;
+
   if (loading) {
     return (
       <View style={styles.centered}>
@@ -119,20 +134,36 @@ export default function VolumeDashboardScreen() {
   }
 
   return (
-    <ScrollView contentContainerStyle={styles.container}>
+    <ScrollView
+      contentContainerStyle={styles.container}
+      refreshControl={
+        <RefreshControl
+          refreshing={refreshing}
+          onRefresh={() => {
+            void onRefresh();
+          }}
+          tintColor={theme.colors.accent}
+        />
+      }
+    >
       <View style={styles.heroCard}>
-        <Text style={styles.heroTag}>Weekly Volume</Text>
-        <Text style={styles.weekLabel}>{weekLabel}</Text>
-        <Text style={styles.rangeLabel}>{rangeLabel}</Text>
+        <Text style={styles.heroTag}>Weekly Volume Dashboard</Text>
+        <Text style={styles.heroMetric}>
+          {optimalCount} of {results.length}
+        </Text>
+        <Text style={styles.heroTitle}>muscles in optimal zone</Text>
+        <Text style={styles.rangeLabel}>
+          {weekLabel} • {rangeLabel}
+        </Text>
       </View>
 
       <View style={styles.zoneSummaryRow}>
         {zoneOrder.map((zone) => (
-          <View key={zone} style={styles.zoneSummaryChip}>
-            <View style={[styles.zoneDot, { backgroundColor: zoneColor[zone] }]} />
-            <Text style={styles.zoneSummaryText}>
-              {zone}: {zoneCounts[zone]}
+          <View key={zone} style={[styles.zoneSummaryChip, { borderColor: zoneColor[zone] }]}>
+            <Text style={[styles.zoneSummaryCount, { color: zoneColor[zone] }]}>
+              {zoneCounts[zone]}
             </Text>
+            <Text style={styles.zoneSummaryText}>{zone}</Text>
           </View>
         ))}
       </View>
@@ -143,7 +174,7 @@ export default function VolumeDashboardScreen() {
           <View key={zone} style={styles.legendRow}>
             <View style={[styles.zoneDot, { backgroundColor: zoneColor[zone] }]} />
             <Text style={styles.legendText}>
-              {zone} - {zoneLabel[zone]}
+              {zone}: {zoneLabel[zone]}
             </Text>
           </View>
         ))}
@@ -176,103 +207,114 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: theme.colors.background,
+    backgroundColor: theme.colors.bg1,
   },
   container: {
-    padding: 12,
-    gap: 10,
-    backgroundColor: theme.colors.background,
+    padding: theme.spacing.lg,
+    gap: theme.spacing.md,
+    backgroundColor: theme.colors.bg1,
   },
   heroCard: {
-    borderRadius: 14,
+    borderRadius: theme.radius.lg,
     borderWidth: 1,
-    borderColor: '#345378',
-    backgroundColor: '#122238',
-    padding: 12,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg2,
+    padding: theme.spacing.lg,
     gap: 2,
   },
   heroTag: {
-    color: '#a7c6ec',
-    fontSize: 11,
+    color: theme.colors.textSecondary,
+    fontSize: theme.fontSize.xs,
     fontWeight: '800',
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
+    letterSpacing: 0.5,
   },
-  weekLabel: {
-    color: '#ebf3ff',
-    fontSize: 23,
+  heroMetric: {
+    color: theme.colors.zoneGreen,
+    fontSize: theme.fontSize.hero,
+    lineHeight: 40,
     fontWeight: '900',
+    fontVariant: ['tabular-nums'],
+  },
+  heroTitle: {
+    color: theme.colors.textPrimary,
+    fontSize: theme.fontSize.lg,
+    fontWeight: '700',
   },
   rangeLabel: {
-    color: '#b2c7e3',
-    fontSize: 13,
-    fontWeight: '700',
+    color: theme.colors.textMuted,
+    fontSize: theme.fontSize.sm,
+    fontVariant: ['tabular-nums'],
   },
   zoneSummaryRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 8,
+    gap: theme.spacing.sm,
   },
   zoneSummaryChip: {
     minHeight: 34,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: '#334d70',
-    backgroundColor: '#101d31',
+    backgroundColor: theme.colors.bg2,
     paddingHorizontal: 10,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
   },
-  zoneDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 999,
+  zoneSummaryCount: {
+    fontSize: theme.fontSize.sm,
+    fontWeight: '900',
+    fontVariant: ['tabular-nums'],
   },
   zoneSummaryText: {
-    color: theme.colors.textPrimary,
-    fontSize: 11,
-    fontWeight: '800',
+    color: theme.colors.textSecondary,
+    fontSize: theme.fontSize.xs,
+    fontWeight: '700',
+    letterSpacing: 0.3,
   },
   legendCard: {
-    borderRadius: 12,
+    borderRadius: theme.radius.md,
     borderWidth: 1,
-    borderColor: '#31486a',
-    backgroundColor: '#101b2c',
-    padding: 12,
-    gap: 6,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg2,
+    padding: theme.spacing.md,
+    gap: theme.spacing.sm,
   },
   legendTitle: {
     color: theme.colors.textPrimary,
     fontWeight: '800',
-    fontSize: 13,
+    fontSize: theme.fontSize.md,
   },
   legendRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
   },
+  zoneDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 999,
+  },
   legendText: {
     color: theme.colors.textSecondary,
-    fontSize: 12,
+    fontSize: theme.fontSize.sm,
     fontWeight: '600',
   },
   barsCard: {
-    borderRadius: 12,
+    borderRadius: theme.radius.md,
     borderWidth: 1,
-    borderColor: '#304868',
-    backgroundColor: '#0f192a',
-    padding: 12,
-    gap: 10,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg2,
+    padding: theme.spacing.md,
+    gap: theme.spacing.md,
   },
   barsTitle: {
     color: theme.colors.textPrimary,
     fontWeight: '900',
-    fontSize: 15,
+    fontSize: theme.fontSize.lg,
   },
   emptyText: {
     color: theme.colors.textSecondary,
     fontWeight: '600',
-    fontSize: 13,
+    fontSize: theme.fontSize.sm,
   },
 });

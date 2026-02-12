@@ -8,7 +8,7 @@ import { muscleGroups } from '../constants/mevThresholds';
 import { getDatabase } from './schema';
 
 const SEED_VERSION_KEY = 'seed_version';
-const SEED_VERSION = '1';
+const SEED_VERSION = '3';
 
 interface DayTemplateRow {
   id: number;
@@ -66,11 +66,7 @@ export async function seedDatabaseIfNeeded(): Promise<void> {
       await transaction.runAsync(
         `INSERT INTO exercises (id, name, category, equipment, is_active)
          VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
-           name = excluded.name,
-           category = excluded.category,
-           equipment = excluded.equipment,
-           is_active = excluded.is_active;`,
+         ON CONFLICT(id) DO NOTHING;`,
         [
           exercise.id,
           exercise.name,
@@ -131,14 +127,16 @@ export async function seedDatabaseIfNeeded(): Promise<void> {
             day_template_id,
             slot_order,
             default_exercise_id,
+            input_mode,
             target_sets,
             target_rep_low,
             target_rep_high,
             rest_seconds,
             notes
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(day_template_id, slot_order) DO UPDATE SET
             default_exercise_id = excluded.default_exercise_id,
+            input_mode = excluded.input_mode,
             target_sets = excluded.target_sets,
             target_rep_low = excluded.target_rep_low,
             target_rep_high = excluded.target_rep_high,
@@ -148,6 +146,7 @@ export async function seedDatabaseIfNeeded(): Promise<void> {
             dayTemplateRow.id,
             slot.slotOrder,
             slot.defaultExerciseId,
+            slot.inputMode ?? 'reps',
             slot.targetSets,
             slot.targetRepLow,
             slot.targetRepHigh,

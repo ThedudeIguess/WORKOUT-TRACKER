@@ -11,7 +11,7 @@ export function PrsInput({ value, onChange }: PrsInputProps) {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>How recovered do you feel? (0-10)</Text>
+      <Text style={styles.title}>Perceived Recovery Status (0-10)</Text>
       <View style={styles.grid}>
         {values.map((score) => {
           const selected = value === score;
@@ -20,7 +20,11 @@ export function PrsInput({ value, onChange }: PrsInputProps) {
               accessibilityRole="button"
               key={score}
               onPress={() => onChange(score)}
-              style={[styles.button, selected && styles.buttonSelected]}
+              style={({ pressed }) => [
+                styles.button,
+                selected && styles.buttonSelected,
+                pressed && styles.pressed,
+              ]}
             >
               <Text style={[styles.buttonLabel, selected && styles.buttonLabelSelected]}>
                 {score}
@@ -35,38 +39,42 @@ export function PrsInput({ value, onChange }: PrsInputProps) {
 
 const styles = StyleSheet.create({
   container: {
-    gap: 12,
+    gap: theme.spacing.sm,
   },
   title: {
     color: theme.colors.textPrimary,
-    fontSize: 16,
+    fontSize: theme.fontSize.md,
     fontWeight: '700',
   },
   grid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 8,
+    gap: theme.spacing.sm,
   },
   button: {
     minWidth: 44,
     minHeight: 44,
-    borderRadius: 10,
+    borderRadius: theme.radius.md,
     borderWidth: 1,
     borderColor: theme.colors.border,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: theme.colors.surface,
+    backgroundColor: theme.colors.bg1,
   },
   buttonSelected: {
-    backgroundColor: theme.colors.accent,
+    backgroundColor: theme.colors.accentDim,
     borderColor: theme.colors.accent,
   },
   buttonLabel: {
-    color: theme.colors.textPrimary,
-    fontSize: 15,
+    color: theme.colors.textSecondary,
+    fontSize: theme.fontSize.md,
     fontWeight: '700',
+    fontVariant: ['tabular-nums'],
   },
   buttonLabelSelected: {
-    color: '#04150f',
+    color: theme.colors.accent,
+  },
+  pressed: {
+    opacity: 0.7,
   },
 });

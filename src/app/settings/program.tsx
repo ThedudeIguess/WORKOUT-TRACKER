@@ -192,9 +192,7 @@ export default function ProgramSettingsScreen() {
       <View style={styles.heroCard}>
         <Text style={styles.tag}>Settings</Text>
         <Text style={styles.title}>Program Templates</Text>
-        <Text style={styles.subtitle}>
-          Edit day names and slot targets for the active phase.
-        </Text>
+        <Text style={styles.subtitle}>Edit day names and slot targets for the active phase.</Text>
       </View>
 
       {templates.map((day) => (
@@ -219,7 +217,7 @@ export default function ProgramSettingsScreen() {
               onPress={() => {
                 void saveDayName(day.id);
               }}
-              style={styles.saveButton}
+              style={({ pressed }) => [styles.saveButton, pressed && styles.pressed]}
             >
               <Text style={styles.saveButtonText}>
                 {savingDayId === day.id ? 'Saving...' : 'Save Day'}
@@ -305,7 +303,7 @@ export default function ProgramSettingsScreen() {
                     }))
                   }
                   placeholder="Slot notes (optional)"
-                  placeholderTextColor={theme.colors.textSecondary}
+                  placeholderTextColor={theme.colors.textMuted}
                   style={styles.notesInput}
                 />
 
@@ -314,11 +312,9 @@ export default function ProgramSettingsScreen() {
                   onPress={() => {
                     void saveSlot(slot.id);
                   }}
-                  style={styles.saveButton}
+                  style={({ pressed }) => [styles.saveButton, pressed && styles.pressed]}
                 >
-                  <Text style={styles.saveButtonText}>
-                    {isSaving ? 'Saving...' : 'Save Slot'}
-                  </Text>
+                  <Text style={styles.saveButtonText}>{isSaving ? 'Saving...' : 'Save Slot'}</Text>
                 </Pressable>
               </View>
             );
@@ -335,46 +331,43 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: theme.colors.background,
+    backgroundColor: theme.colors.bg1,
   },
   container: {
-    padding: 12,
-    gap: 10,
-    backgroundColor: theme.colors.background,
+    padding: theme.spacing.lg,
+    gap: theme.spacing.md,
+    backgroundColor: theme.colors.bg1,
   },
   heroCard: {
-    borderRadius: 14,
+    borderRadius: theme.radius.lg,
     borderWidth: 1,
-    borderColor: '#345378',
-    backgroundColor: '#122238',
-    padding: 12,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg2,
+    padding: theme.spacing.lg,
     gap: 3,
   },
   tag: {
-    color: '#a7c6ec',
-    fontSize: 11,
+    color: theme.colors.textSecondary,
+    fontSize: theme.fontSize.xs,
     fontWeight: '800',
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
+    letterSpacing: 0.5,
   },
   title: {
     color: theme.colors.textPrimary,
-    fontSize: 22,
-    fontWeight: '900',
+    fontSize: theme.fontSize.xl,
+    fontWeight: '800',
   },
   subtitle: {
-    color: theme.colors.textSecondary,
-    fontWeight: '600',
-    lineHeight: 18,
-    fontSize: 12,
+    color: theme.colors.textMuted,
+    fontSize: theme.fontSize.sm,
   },
   dayCard: {
-    borderRadius: 12,
+    borderRadius: theme.radius.md,
     borderWidth: 1,
-    borderColor: '#304868',
-    backgroundColor: '#0f192a',
-    padding: 12,
-    gap: 10,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg2,
+    padding: theme.spacing.md,
+    gap: theme.spacing.sm,
   },
   dayHeaderRow: {
     flexDirection: 'row',
@@ -385,98 +378,102 @@ const styles = StyleSheet.create({
     minHeight: 24,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: '#466a99',
-    backgroundColor: '#193152',
+    borderColor: theme.colors.borderFocus,
+    backgroundColor: theme.colors.bg3,
     justifyContent: 'center',
     paddingHorizontal: 9,
   },
   dayNumberText: {
-    color: '#d3e7ff',
-    fontSize: 11,
+    color: theme.colors.textPrimary,
+    fontSize: theme.fontSize.xs,
     fontWeight: '900',
   },
   slotCountText: {
-    color: '#9fb8d8',
-    fontSize: 12,
+    color: theme.colors.textMuted,
+    fontSize: theme.fontSize.sm,
     fontWeight: '700',
   },
   dayNameRow: {
     flexDirection: 'row',
-    gap: 8,
+    gap: theme.spacing.sm,
     alignItems: 'center',
   },
   dayNameInput: {
     flex: 1,
-    minHeight: 44,
-    borderRadius: 10,
+    minHeight: 42,
+    borderRadius: theme.radius.md,
     borderWidth: 1,
-    borderColor: '#38567a',
-    backgroundColor: '#122139',
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg1,
     color: theme.colors.textPrimary,
     paddingHorizontal: 12,
     fontWeight: '700',
   },
   saveButton: {
-    minHeight: 42,
-    borderRadius: 10,
+    minHeight: 38,
+    borderRadius: theme.radius.md,
     borderWidth: 1,
-    borderColor: '#39557a',
-    backgroundColor: '#122138',
+    borderColor: theme.colors.borderFocus,
+    backgroundColor: theme.colors.bg3,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 10,
   },
   saveButtonText: {
-    color: '#cce0fa',
+    color: theme.colors.textPrimary,
     fontWeight: '800',
-    fontSize: 12,
+    fontSize: theme.fontSize.sm,
   },
   slotCard: {
-    borderRadius: 10,
+    borderRadius: theme.radius.md,
     borderWidth: 1,
-    borderColor: '#304868',
-    backgroundColor: '#122036',
-    padding: 10,
-    gap: 8,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg1,
+    padding: theme.spacing.md,
+    gap: theme.spacing.sm,
   },
   slotTitle: {
     color: theme.colors.textPrimary,
     fontWeight: '800',
-    fontSize: 13,
+    fontSize: theme.fontSize.sm,
   },
   slotFieldRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 8,
+    gap: theme.spacing.sm,
   },
   slotField: {
     width: '48.7%',
     gap: 4,
   },
   slotLabel: {
-    color: '#9fb8d8',
-    fontSize: 10,
+    color: theme.colors.textMuted,
+    fontSize: theme.fontSize.xs,
     fontWeight: '700',
-    textTransform: 'uppercase',
+    letterSpacing: 0.4,
   },
   slotInput: {
-    minHeight: 40,
-    borderRadius: 8,
+    minHeight: 38,
+    borderRadius: theme.radius.sm,
     borderWidth: 1,
-    borderColor: '#39557a',
-    backgroundColor: '#122138',
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg2,
     color: theme.colors.textPrimary,
     paddingHorizontal: 10,
     fontWeight: '700',
+    fontVariant: ['tabular-nums'],
   },
   notesInput: {
-    minHeight: 40,
-    borderRadius: 8,
+    minHeight: 38,
+    borderRadius: theme.radius.sm,
     borderWidth: 1,
-    borderColor: '#39557a',
-    backgroundColor: '#122138',
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg2,
     color: theme.colors.textPrimary,
     paddingHorizontal: 10,
     paddingVertical: 10,
+  },
+  pressed: {
+    opacity: 0.7,
   },
 });

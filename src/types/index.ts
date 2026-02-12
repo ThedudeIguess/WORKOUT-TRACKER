@@ -70,6 +70,7 @@ export interface TemplateExerciseSlot {
   dayTemplateId: number;
   slotOrder: number;
   defaultExerciseId: string;
+  inputMode: 'reps' | 'timed';
   targetSets: number;
   targetRepLow: number;
   targetRepHigh: number;
@@ -120,6 +121,7 @@ export interface DayTemplateSlotWithOptions {
   slotOrder: number;
   defaultExerciseId: string;
   defaultExerciseName: string;
+  inputMode: 'reps' | 'timed';
   targetSets: number;
   targetRepLow: number;
   targetRepHigh: number;

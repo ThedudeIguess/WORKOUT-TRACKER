@@ -6,6 +6,7 @@ export const HYBRID_PHASE_1_ID = 'hybrid-bb-2-phase-1';
 export interface SeedProgramSlot {
   slotOrder: number;
   defaultExerciseId: string;
+  inputMode?: 'reps' | 'timed';
   targetSets: number;
   targetRepLow: number;
   targetRepHigh: number;
@@ -62,11 +63,12 @@ export const phaseOneProgramDays: SeedProgramDay[] = [
         slotOrder: 4,
         defaultExerciseId: 'ghd-raise',
         ...ACCESSORY_DEFAULT,
-        alternateExerciseIds: ['hanging-knee-raise'],
+        alternateExerciseIds: ['hanging-knee-raise', 'hyperextension-glute'],
       },
       {
         slotOrder: 5,
         defaultExerciseId: 'wall-hip-flexor-stretch',
+        inputMode: 'timed',
         targetSets: 2,
         targetRepLow: 1,
         targetRepHigh: 1,
@@ -103,6 +105,7 @@ export const phaseOneProgramDays: SeedProgramDay[] = [
       {
         slotOrder: 5,
         defaultExerciseId: 'dead-hang-passive',
+        inputMode: 'timed',
         targetSets: 2,
         targetRepLow: 1,
         targetRepHigh: 1,
@@ -139,6 +142,7 @@ export const phaseOneProgramDays: SeedProgramDay[] = [
       {
         slotOrder: 5,
         defaultExerciseId: 'box-step-overs',
+        inputMode: 'timed',
         targetSets: 1,
         targetRepLow: 1,
         targetRepHigh: 1,
@@ -148,6 +152,7 @@ export const phaseOneProgramDays: SeedProgramDay[] = [
       {
         slotOrder: 6,
         defaultExerciseId: 'ql-walk-carry',
+        inputMode: 'timed',
         targetSets: 1,
         targetRepLow: 1,
         targetRepHigh: 1,
@@ -188,6 +193,7 @@ export const phaseOneProgramDays: SeedProgramDay[] = [
       {
         slotOrder: 5,
         defaultExerciseId: 'mobility-metcon',
+        inputMode: 'timed',
         targetSets: 1,
         targetRepLow: 1,
         targetRepHigh: 1,
@@ -224,6 +230,7 @@ export const phaseOneProgramDays: SeedProgramDay[] = [
       {
         slotOrder: 5,
         defaultExerciseId: 'dead-hang-passive',
+        inputMode: 'timed',
         targetSets: 2,
         targetRepLow: 1,
         targetRepHigh: 1,
@@ -260,6 +267,7 @@ export const phaseOneProgramDays: SeedProgramDay[] = [
       {
         slotOrder: 5,
         defaultExerciseId: 'hill-sprints',
+        inputMode: 'timed',
         targetSets: 6,
         targetRepLow: 1,
         targetRepHigh: 1,

@@ -18,8 +18,10 @@ import * as Notifications from 'expo-notifications';
 import { ExerciseCard } from '../../components/ExerciseCard';
 import { PrsInput } from '../../components/PrsInput';
 import { SetRow } from '../../components/SetRow';
+import { muscleGroups } from '../../constants/mevThresholds';
 import { theme } from '../../constants/theme';
 import {
+  addSlotAlternate,
   completeWorkoutSession,
   createWorkoutSession,
   deleteSet,
@@ -27,6 +29,9 @@ import {
   getDayTemplateByDayNumber,
   getMostRecentLoad,
   getWorkoutSets,
+  insertCustomExercise,
+  insertExerciseMuscleMappings,
+  listExerciseLibrary,
   logSet,
   updateSet,
 } from '../../db/queries';
@@ -35,9 +40,24 @@ import { useWorkoutStore, type DraftSetInput } from '../../stores/workoutStore';
 import type {
   DayTemplateWithSlots,
   EffortLabel,
+  ExerciseCategory,
   ProgressionSuggestion,
 } from '../../types';
 import { getProgressionSuggestion } from '../../utils/progressionEngine';
+
+const customExerciseCategories: ExerciseCategory[] = [
+  'compound',
+  'isolation',
+  'metcon',
+  'mobility',
+];
+
+const effortColorByLabel: Record<EffortLabel, string> = {
+  easy: theme.colors.effortEasy,
+  productive: theme.colors.effortProductive,
+  hard: theme.colors.effortHard,
+  failure: theme.colors.effortFailure,
+};
 
 interface LocalLoggedSet {
   id: number;
@@ -85,11 +105,16 @@ async function cancelRestNotification(id: string | null): Promise<void> {
 }
 
 export default function ActiveWorkoutScreen() {
-  const params = useLocalSearchParams<{ dayId: string; workoutId?: string }>();
+  const params = useLocalSearchParams<{
+    dayId: string;
+    workoutId?: string;
+    backdateIso?: string;
+  }>();
   const router = useRouter();
   const insets = useSafeAreaInsets();
 
   const dayNumber = Number(params.dayId || '1');
+  const backdateIso = params.backdateIso ?? null;
   const defaultRestSeconds = useSettingsStore((state) => state.defaultRestSeconds);
 
   const {
@@ -120,6 +145,7 @@ export default function ActiveWorkoutScreen() {
     params.workoutId ?? null
   );
   const [startedAt, setStartedAt] = useState<string | null>(null);
+  const [elapsedStartAt, setElapsedStartAt] = useState<string | null>(null);
   const [prsScore, setPrsScore] = useState<number | null>(null);
   const [bodyweightInput, setBodyweightInput] = useState('');
   const [showFinishFlow, setShowFinishFlow] = useState(false);
@@ -132,6 +158,15 @@ export default function ActiveWorkoutScreen() {
   );
   const [swapSlotId, setSwapSlotId] = useState<number | null>(null);
   const restNotificationId = useRef<string | null>(null);
+  const [customExerciseOptions, setCustomExerciseOptions] = useState<
+    Array<{ id: string; name: string }>
+  >([]);
+  const [showCustomExerciseForm, setShowCustomExerciseForm] = useState(false);
+  const [creatingCustomExercise, setCreatingCustomExercise] = useState(false);
+  const [customExerciseName, setCustomExerciseName] = useState('');
+  const [customExerciseCategory, setCustomExerciseCategory] = useState<ExerciseCategory>('isolation');
+  const [customPrimaryMuscles, setCustomPrimaryMuscles] = useState<string[]>([]);
+  const [customSecondaryMuscles, setCustomSecondaryMuscles] = useState<string[]>([]);
 
   useEffect(() => {
     return () => {
@@ -139,6 +174,12 @@ export default function ActiveWorkoutScreen() {
       void cancelRestNotification(restNotificationId.current);
     };
   }, [clearSessionUiState]);
+
+  useEffect(() => {
+    if (swapSlotId === null) {
+      resetCustomExerciseForm();
+    }
+  }, [swapSlotId]);
 
   useEffect(() => {
     let mounted = true;
@@ -160,10 +201,25 @@ export default function ActiveWorkoutScreen() {
           };
         });
 
+        const exerciseLibrary = await listExerciseLibrary();
+        if (!mounted) {
+          return;
+        }
+        setCustomExerciseOptions(
+          exerciseLibrary
+            .filter((exercise) => exercise.id.startsWith('custom-') && exercise.isActive)
+            .map((exercise) => ({
+              id: exercise.id,
+              name: exercise.name,
+            }))
+            .sort((left, right) => left.name.localeCompare(right.name))
+        );
+
         let resolvedWorkoutId = workoutId;
         const activeWorkout = await getActiveWorkout();
 
         if (
+          !backdateIso &&
           activeWorkout &&
           activeWorkout.dayNumber === loadedTemplate.dayNumber &&
           (!resolvedWorkoutId || resolvedWorkoutId === activeWorkout.workoutId)
@@ -171,6 +227,7 @@ export default function ActiveWorkoutScreen() {
           resolvedWorkoutId = activeWorkout.workoutId;
           setWorkoutId(activeWorkout.workoutId);
           setStartedAt(activeWorkout.startedAt);
+          setElapsedStartAt(activeWorkout.startedAt);
         }
 
         if (resolvedWorkoutId) {
@@ -249,21 +306,21 @@ export default function ActiveWorkoutScreen() {
     return () => {
       mounted = false;
     };
-  }, [dayNumber, workoutId]);
+  }, [backdateIso, dayNumber, workoutId]);
 
   useEffect(() => {
-    if (!startedAt) {
+    if (!elapsedStartAt) {
       return;
     }
 
     const interval = setInterval(() => {
       const nowMs = Date.now();
-      const startedAtMs = new Date(startedAt).getTime();
-      setElapsedSeconds(Math.max(0, Math.floor((nowMs - startedAtMs) / 1000)));
+      const elapsedStartAtMs = new Date(elapsedStartAt).getTime();
+      setElapsedSeconds(Math.max(0, Math.floor((nowMs - elapsedStartAtMs) / 1000)));
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [startedAt]);
+  }, [elapsedStartAt]);
 
   useEffect(() => {
     if (!restTimer.isRunning) {
@@ -308,6 +365,103 @@ export default function ActiveWorkoutScreen() {
     Alert.alert(title, message);
   };
 
+  const resetCustomExerciseForm = () => {
+    setShowCustomExerciseForm(false);
+    setCreatingCustomExercise(false);
+    setCustomExerciseName('');
+    setCustomExerciseCategory('isolation');
+    setCustomPrimaryMuscles([]);
+    setCustomSecondaryMuscles([]);
+  };
+
+  const toggleMuscleSelection = (
+    muscleGroupId: string,
+    setState: (updater: (current: string[]) => string[]) => void
+  ) => {
+    setState((current) => {
+      if (current.includes(muscleGroupId)) {
+        return current.filter((entry) => entry !== muscleGroupId);
+      }
+      return [...current, muscleGroupId];
+    });
+  };
+
+  const createCustomExerciseForSwapSlot = async () => {
+    if (!swapSlot) {
+      return;
+    }
+
+    const trimmedName = customExerciseName.trim();
+    if (!trimmedName) {
+      Alert.alert('Custom exercise', 'Exercise name is required.');
+      return;
+    }
+
+    if (customPrimaryMuscles.length === 0) {
+      Alert.alert('Custom exercise', 'Select at least one primary muscle group.');
+      return;
+    }
+
+    const slug = trimmedName
+      .toLowerCase()
+      .replace(/[^a-z0-9\\s-]/g, '')
+      .trim()
+      .replace(/\\s+/g, '-');
+    const exerciseId = `custom-${slug || 'exercise'}-${Date.now()}`;
+
+    const secondaryMuscles = customSecondaryMuscles.filter(
+      (muscleGroup) => !customPrimaryMuscles.includes(muscleGroup)
+    );
+
+    setCreatingCustomExercise(true);
+    try {
+      await insertCustomExercise({
+        id: exerciseId,
+        name: trimmedName,
+        category: customExerciseCategory,
+        equipment: null,
+      });
+
+      await insertExerciseMuscleMappings([
+        ...customPrimaryMuscles.map((muscleGroup) => ({
+          exerciseId,
+          muscleGroup,
+          role: 'direct' as const,
+        })),
+        ...secondaryMuscles.map((muscleGroup) => ({
+          exerciseId,
+          muscleGroup,
+          role: 'indirect' as const,
+        })),
+      ]);
+
+      await addSlotAlternate(swapSlot.id, exerciseId);
+
+      const customOption = { id: exerciseId, name: trimmedName };
+      setCustomExerciseOptions((current) =>
+        [...current, customOption].sort((left, right) =>
+          left.name.localeCompare(right.name)
+        )
+      );
+      setSelectedExerciseBySlot((current) => ({
+        ...current,
+        [swapSlot.id]: customOption,
+      }));
+      void fetchProgressionHint(exerciseId);
+
+      resetCustomExerciseForm();
+      setSwapSlotId(null);
+    } catch (error) {
+      showActionError(
+        'Custom exercise failed',
+        error,
+        'Could not create custom exercise.'
+      );
+    } finally {
+      setCreatingCustomExercise(false);
+    }
+  };
+
   const startWorkout = async () => {
     if (!template) {
       return;
@@ -316,13 +470,16 @@ export default function ActiveWorkoutScreen() {
     setActionError(null);
     setSubmitting(true);
     try {
+      const nowIso = new Date().toISOString();
       const result = await createWorkoutSession({
         dayTemplateId: template.id,
         prsScore,
         bodyweightKg: bodyweightInput ? Number(bodyweightInput) : null,
+        startedAtOverride: backdateIso ?? undefined,
       });
       setWorkoutId(result.workoutId);
-      setStartedAt(new Date().toISOString());
+      setStartedAt(backdateIso ?? nowIso);
+      setElapsedStartAt(nowIso);
       setElapsedSeconds(0);
     } catch (error) {
       showActionError(
@@ -354,12 +511,18 @@ export default function ActiveWorkoutScreen() {
     const selectedExercise = selectedExerciseBySlot[slot.id];
     try {
       setActionError(null);
-      const mostRecentLoad = selectedExercise
+      const isTimedSlot = slot.inputMode === 'timed';
+      const mostRecentLoad = !isTimedSlot && selectedExercise
         ? await getMostRecentLoad(selectedExercise.id)
         : null;
 
       const draft: DraftSetInput = {
-        loadKg: mostRecentLoad !== null ? String(mostRecentLoad) : '',
+        loadKg:
+          isTimedSlot
+            ? '0'
+            : mostRecentLoad !== null
+              ? String(mostRecentLoad)
+              : '',
         reps: '',
         effortLabel: null,
         isWarmup: false,
@@ -389,12 +552,13 @@ export default function ActiveWorkoutScreen() {
     }
 
     const reps = Number(draft.reps);
-    const loadKg = Number(draft.loadKg);
+    const isTimedSlot = slot.inputMode === 'timed';
+    const loadKg = isTimedSlot ? 0 : Number(draft.loadKg);
     if (!Number.isFinite(reps) || reps <= 0) {
       return;
     }
 
-    if (!Number.isFinite(loadKg) || loadKg < 0) {
+    if (!isTimedSlot && (!Number.isFinite(loadKg) || loadKg < 0)) {
       return;
     }
 
@@ -446,6 +610,7 @@ export default function ActiveWorkoutScreen() {
         effortLabel: draft.effortLabel,
         isWarmup: draft.isWarmup,
         notes: null,
+        loggedAtOverride: backdateIso ?? undefined,
       });
 
       setLoggedSets((current) => [
@@ -544,7 +709,8 @@ export default function ActiveWorkoutScreen() {
         notes: notes.trim().length > 0 ? notes.trim() : null,
       });
       clearSessionUiState();
-      router.replace('/');
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      router.back();
     } catch (error) {
       showActionError(
         'Could not finish workout',
@@ -556,9 +722,16 @@ export default function ActiveWorkoutScreen() {
     }
   };
 
-  const elapsedLabel = `${Math.floor(elapsedSeconds / 60)}:${String(
-    elapsedSeconds % 60
-  ).padStart(2, '0')}`;
+  const formatClock = (seconds: number) => {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(
+      secs
+    ).padStart(2, '0')}`;
+  };
+
+  const elapsedLabel = formatClock(elapsedSeconds);
 
   const incompleteExerciseSlots = template
     ? template.slots.filter((slot) => {
@@ -589,6 +762,7 @@ export default function ActiveWorkoutScreen() {
         name: swapSlot.defaultExerciseName,
       },
       ...swapSlot.alternateExercises,
+      ...customExerciseOptions,
     ];
 
     const seen = new Set<string>();
@@ -599,12 +773,18 @@ export default function ActiveWorkoutScreen() {
       seen.add(option.id);
       return true;
     });
-  }, [swapSlot]);
+  }, [customExerciseOptions, swapSlot]);
 
-  const restProgress =
+  const restRemainingRatio =
     restTimer.totalSeconds > 0
-      ? (restTimer.totalSeconds - restTimer.remainingSeconds) / restTimer.totalSeconds
+      ? restTimer.remainingSeconds / restTimer.totalSeconds
       : 0;
+  const restFillColor =
+    restRemainingRatio > 0.5
+      ? theme.colors.accent
+      : restRemainingRatio > 0.25
+        ? theme.colors.warning
+        : theme.colors.danger;
 
   if (loading || !template) {
     return (
@@ -622,24 +802,29 @@ export default function ActiveWorkoutScreen() {
     >
       <View style={styles.header}>
         <View style={styles.headerLeft}>
-          <Text style={styles.dayTag}>Day {template.dayNumber}</Text>
-          <Text style={styles.dayName}>{template.dayName}</Text>
-          <View style={styles.headerStatRow}>
-            <View style={styles.headerStatPill}>
-              <Text style={styles.headerStatLabel}>Elapsed</Text>
-              <Text style={styles.headerStatValue}>{elapsedLabel}</Text>
+          <Text style={styles.dayName}>
+            Day {template.dayNumber} - {template.dayName}
+          </Text>
+          {backdateIso ? (
+            <View style={styles.backdateBanner}>
+              <Text style={styles.backdateBannerText}>
+                Logging for {new Date(backdateIso).toLocaleDateString()}
+              </Text>
             </View>
-            <View style={styles.headerStatPill}>
-              <Text style={styles.headerStatLabel}>Sets</Text>
-              <Text style={styles.headerStatValue}>{loggedSets.length}</Text>
-            </View>
-          </View>
+          ) : null}
           {actionError ? <Text style={styles.errorText}>{actionError}</Text> : null}
         </View>
 
-        <Pressable onPress={() => setShowFinishFlow(true)} style={styles.finishButton}>
-          <Text style={styles.finishButtonText}>Finish</Text>
-        </Pressable>
+        <View style={styles.headerRight}>
+          <Text style={styles.headerStatLabel}>ELAPSED</Text>
+          <Text style={styles.headerElapsedValue}>{elapsedLabel}</Text>
+          <Pressable
+            onPress={() => setShowFinishFlow(true)}
+            style={({ pressed }) => [styles.finishButton, pressed && styles.pressed]}
+          >
+            <Text style={styles.finishButtonText}>Finish</Text>
+          </Pressable>
+        </View>
       </View>
 
       {!workoutId ? (
@@ -667,7 +852,8 @@ export default function ActiveWorkoutScreen() {
               <Text style={styles.previewTitle}>Today</Text>
               {template.slots.slice(0, 4).map((slot) => (
                 <Text key={slot.id} style={styles.previewRow}>
-                  {slot.slotOrder}. {slot.defaultExerciseName} ({slot.targetSets} sets, {slot.targetRepLow}-{slot.targetRepHigh} reps)
+                  {slot.slotOrder}. {slot.defaultExerciseName} (
+                  {slot.targetSets} sets, {slot.inputMode === 'timed' ? 'timed' : `${slot.targetRepLow}-${slot.targetRepHigh} reps`})
                 </Text>
               ))}
               {template.slots.length > 4 ? (
@@ -680,7 +866,11 @@ export default function ActiveWorkoutScreen() {
               onPress={() => {
                 void startWorkout();
               }}
-              style={[styles.primaryButton, submitting && styles.primaryButtonDisabled]}
+              style={({ pressed }) => [
+                styles.primaryButton,
+                submitting && styles.primaryButtonDisabled,
+                pressed && styles.pressed,
+              ]}
             >
               <Text style={styles.primaryButtonText}>Start Logging</Text>
             </Pressable>
@@ -708,21 +898,32 @@ export default function ActiveWorkoutScreen() {
             const draftSet = draftSetsBySlotId[slot.id];
             const progression = progressionByExercise[slotExercise.id];
             const isComplete = slotSets.length >= slot.targetSets;
+            const isTimedSlot = slot.inputMode === 'timed';
+            const targetLabel = isTimedSlot
+              ? `${slot.targetSets} sets x duration`
+              : `${slot.targetSets} sets x ${slot.targetRepLow}-${slot.targetRepHigh} reps`;
 
             return (
               <ExerciseCard
                 key={slot.id}
                 title={slotExercise.name}
                 setSummary={setSummary}
-                targetLabel={`${slot.targetSets} sets x ${slot.targetRepLow}-${slot.targetRepHigh} reps`}
+                targetLabel={targetLabel}
                 notes={slot.notes}
                 expanded={expandedSlotIds.includes(slot.id)}
                 completed={isComplete}
+                accentColor={
+                  isTimedSlot
+                    ? theme.colors.info
+                    : isComplete
+                      ? theme.colors.accent
+                      : theme.colors.borderFocus
+                }
                 onToggle={() => toggleSlotExpanded(slot.id)}
                 onOpenSwap={() => setSwapSlotId(slot.id)}
                 progressionHint={
                   progression
-                    ? `Progress hint: try ${progression.suggestedLoadKg.toFixed(1)} kg`
+                    ? `Try ${progression.suggestedLoadKg.toFixed(1)} kg next`
                     : null
                 }
               >
@@ -733,11 +934,21 @@ export default function ActiveWorkoutScreen() {
                       onPress={() => openEditSet(set)}
                       onLongPress={() => deleteLoggedSet(set)}
                       delayLongPress={500}
-                      style={styles.loggedSetRow}
+                      style={({ pressed }) => [styles.loggedSetRow, pressed && styles.pressed]}
                     >
                       <Text style={styles.loggedSetText}>
-                        Set {set.setOrder}: {set.loadKg} kg x {set.reps} | {set.effortLabel}
-                        {set.isWarmup ? ' | warmup' : ''}
+                        Set {set.setOrder}: {isTimedSlot ? `${set.reps}s` : `${set.loadKg}kg x ${set.reps}`}{' '}
+                        <Text
+                          style={[
+                            styles.loggedSetEffort,
+                            { color: effortColorByLabel[set.effortLabel] },
+                          ]}
+                        >
+                          [{set.effortLabel}]
+                        </Text>
+                        {set.isWarmup ? (
+                          <Text style={styles.loggedSetWarmup}> warmup</Text>
+                        ) : null}
                       </Text>
                     </Pressable>
                   ))}
@@ -747,6 +958,8 @@ export default function ActiveWorkoutScreen() {
                   <SetRow
                     setNumber={slotSets.length + (editingSetBySlotId[slot.id] ? 0 : 1)}
                     value={draftSet}
+                    inputMode={slot.inputMode}
+                    intervalHintSeconds={slot.restSeconds}
                     onChange={(nextDraft) => setDraftSet(slot.id, nextDraft)}
                     onConfirm={() => {
                       void confirmSet(slot.id);
@@ -757,7 +970,7 @@ export default function ActiveWorkoutScreen() {
                     onPress={() => {
                       void createDraftSet(slot.id);
                     }}
-                    style={styles.secondaryButton}
+                    style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
                   >
                     <Text style={styles.secondaryButtonText}>Add Set</Text>
                   </Pressable>
@@ -771,45 +984,58 @@ export default function ActiveWorkoutScreen() {
       {restTimer.totalSeconds > 0 ? (
         <View style={[styles.restTimerBar, { bottom: Math.max(10, insets.bottom) }]}>
           <View style={styles.restHeaderRow}>
-            <Text style={styles.restTimerText}>
-              Rest: {restTimer.remainingSeconds}s / {restTimer.totalSeconds}s
-            </Text>
+            <Text style={styles.restTimeBig}>{formatClock(restTimer.remainingSeconds)}</Text>
             <View style={styles.restStatusBadge}>
               <Text style={styles.restStatusText}>
                 {restTimer.isRunning ? 'RUNNING' : 'PAUSED'}
               </Text>
             </View>
           </View>
+          <Text style={styles.restTimerText}>
+            REST {restTimer.remainingSeconds}s / {restTimer.totalSeconds}s
+          </Text>
 
           <View style={styles.restProgressTrack}>
             <View
               style={[
                 styles.restProgressFill,
-                { width: `${Math.max(0, Math.min(1, restProgress)) * 100}%` },
+                {
+                  width: `${Math.max(0, Math.min(1, restRemainingRatio)) * 100}%`,
+                  backgroundColor: restFillColor,
+                },
               ]}
             />
           </View>
 
           <View style={styles.restActions}>
-            <Pressable onPress={() => {
-              pauseRestTimer();
-              void cancelRestNotification(restNotificationId.current);
-              restNotificationId.current = null;
-            }} style={styles.restActionButton}>
+            <Pressable
+              onPress={() => {
+                pauseRestTimer();
+                void cancelRestNotification(restNotificationId.current);
+                restNotificationId.current = null;
+              }}
+              style={({ pressed }) => [styles.restActionButton, pressed && styles.pressed]}
+            >
               <Text style={styles.restActionText}>Pause</Text>
             </Pressable>
-            <Pressable onPress={() => {
-              resetRestTimer();
-              void cancelRestNotification(restNotificationId.current);
-              restNotificationId.current = null;
-            }} style={styles.restActionButton}>
+            <Pressable
+              onPress={() => {
+                resetRestTimer();
+                void cancelRestNotification(restNotificationId.current);
+                restNotificationId.current = null;
+              }}
+              style={({ pressed }) => [styles.restActionButton, pressed && styles.pressed]}
+            >
               <Text style={styles.restActionText}>Reset</Text>
             </Pressable>
-            <Pressable onPress={() => {
-              dismissRestTimer();
-              void cancelRestNotification(restNotificationId.current);
-              restNotificationId.current = null;
-            }} style={styles.restActionButton}>
+            <Pressable
+              onPress={() => {
+                dismissRestTimer();
+                void cancelRestNotification(restNotificationId.current);
+                restNotificationId.current = null;
+              }}
+              style={({ pressed }) => [styles.restActionButton, pressed && styles.pressed]}
+            >
               <Text style={styles.restActionText}>Dismiss</Text>
             </Pressable>
           </View>
@@ -856,7 +1082,11 @@ export default function ActiveWorkoutScreen() {
                     setSwapSlotId(null);
                     void fetchProgressionHint(option.id);
                   }}
-                  style={[styles.sheetOption, selected && styles.sheetOptionSelected]}
+                  style={({ pressed }) => [
+                    styles.sheetOption,
+                    selected && styles.sheetOptionSelected,
+                    pressed && styles.pressed,
+                  ]}
                 >
                   <Text style={[styles.sheetOptionText, selected && styles.sheetOptionTextSelected]}>
                     {option.name}
@@ -864,6 +1094,123 @@ export default function ActiveWorkoutScreen() {
                 </Pressable>
               );
             })}
+
+            <Pressable
+              onPress={() => setShowCustomExerciseForm((current) => !current)}
+              style={({ pressed }) => [styles.sheetCustomButton, pressed && styles.pressed]}
+            >
+              <Text style={styles.sheetCustomButtonText}>+ Add Custom Exercise</Text>
+            </Pressable>
+
+            {showCustomExerciseForm ? (
+              <View style={styles.customFormCard}>
+                <Text style={styles.customFormLabel}>Exercise Name</Text>
+                <TextInput
+                  value={customExerciseName}
+                  onChangeText={setCustomExerciseName}
+                  placeholder="e.g. Hyperextension (Glute Focus)"
+                  placeholderTextColor={theme.colors.textSecondary}
+                  style={styles.customFormInput}
+                />
+
+                <Text style={styles.customFormLabel}>Category</Text>
+                <View style={styles.customCategoryRow}>
+                  {customExerciseCategories.map((category) => {
+                    const selected = customExerciseCategory === category;
+                    return (
+                      <Pressable
+                        key={category}
+                        onPress={() => setCustomExerciseCategory(category)}
+                        style={({ pressed }) => [
+                          styles.customCategoryButton,
+                          selected && styles.customCategoryButtonSelected,
+                          pressed && styles.pressed,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.customCategoryText,
+                            selected && styles.customCategoryTextSelected,
+                          ]}
+                        >
+                          {category}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+
+                <Text style={styles.customFormLabel}>Primary Muscles (Direct)</Text>
+                <View style={styles.customMuscleGrid}>
+                  {muscleGroups.map((muscleGroup) => {
+                    const selected = customPrimaryMuscles.includes(muscleGroup.id);
+                    return (
+                      <Pressable
+                        key={`primary-${muscleGroup.id}`}
+                        onPress={() => toggleMuscleSelection(muscleGroup.id, setCustomPrimaryMuscles)}
+                        style={({ pressed }) => [
+                          styles.customMuscleButton,
+                          selected && styles.customMuscleButtonSelected,
+                          pressed && styles.pressed,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.customMuscleText,
+                            selected && styles.customMuscleTextSelected,
+                          ]}
+                        >
+                          {muscleGroup.displayName}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+
+                <Text style={styles.customFormLabel}>Secondary Muscles (Indirect)</Text>
+                <View style={styles.customMuscleGrid}>
+                  {muscleGroups.map((muscleGroup) => {
+                    const selected = customSecondaryMuscles.includes(muscleGroup.id);
+                    return (
+                      <Pressable
+                        key={`secondary-${muscleGroup.id}`}
+                        onPress={() => toggleMuscleSelection(muscleGroup.id, setCustomSecondaryMuscles)}
+                        style={({ pressed }) => [
+                          styles.customMuscleButton,
+                          selected && styles.customMuscleButtonSecondarySelected,
+                          pressed && styles.pressed,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.customMuscleText,
+                            selected && styles.customMuscleTextSelected,
+                          ]}
+                        >
+                          {muscleGroup.displayName}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+
+                <Pressable
+                  onPress={() => {
+                    void createCustomExerciseForSwapSlot();
+                  }}
+                  disabled={creatingCustomExercise}
+                  style={({ pressed }) => [
+                    styles.sheetCreateButton,
+                    creatingCustomExercise && styles.sheetCreateButtonDisabled,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <Text style={styles.sheetCreateButtonText}>
+                    {creatingCustomExercise ? 'Creating...' : 'Create & Select'}
+                  </Text>
+                </Pressable>
+              </View>
+            ) : null}
           </View>
         </View>
       ) : null}
@@ -902,7 +1249,11 @@ export default function ActiveWorkoutScreen() {
               onPress={() => {
                 void finishWorkout();
               }}
-              style={[styles.primaryButton, submitting && styles.primaryButtonDisabled]}
+              style={({ pressed }) => [
+                styles.primaryButton,
+                submitting && styles.primaryButtonDisabled,
+                pressed && styles.pressed,
+              ]}
             >
               <Text style={styles.primaryButtonText}>Save Workout</Text>
             </Pressable>
@@ -916,150 +1267,147 @@ export default function ActiveWorkoutScreen() {
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: theme.colors.background,
+    backgroundColor: theme.colors.bg1,
   },
   loadingContainer: {
     flex: 1,
-    backgroundColor: theme.colors.background,
+    backgroundColor: theme.colors.bg1,
     justifyContent: 'center',
     alignItems: 'center',
   },
   header: {
-    paddingHorizontal: 14,
-    paddingTop: 14,
-    paddingBottom: 12,
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.lg,
+    paddingBottom: theme.spacing.md,
     borderBottomWidth: 1,
-    borderBottomColor: '#243551',
-    backgroundColor: '#0a1220',
+    borderBottomColor: theme.colors.border,
+    backgroundColor: theme.colors.bg1,
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    gap: 10,
+    alignItems: 'center',
+    gap: theme.spacing.md,
   },
   headerLeft: {
     flex: 1,
-    gap: 4,
+    gap: 6,
   },
-  dayTag: {
-    color: '#b8d4ff',
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-    fontSize: 11,
-    fontWeight: '800',
+  headerRight: {
+    alignItems: 'flex-end',
+    gap: 4,
   },
   dayName: {
     color: theme.colors.textPrimary,
-    fontSize: 22,
+    fontSize: theme.fontSize.xl,
     fontWeight: '900',
-  },
-  headerStatRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 2,
-  },
-  headerStatPill: {
-    minHeight: 30,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: '#324d75',
-    backgroundColor: '#13233a',
-    justifyContent: 'center',
-    paddingHorizontal: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
   },
   headerStatLabel: {
-    color: '#a8c6ee',
-    fontSize: 10,
+    color: theme.colors.textMuted,
+    fontSize: theme.fontSize.xs,
     fontWeight: '800',
-    textTransform: 'uppercase',
+    letterSpacing: 0.3,
   },
-  headerStatValue: {
-    color: '#ebf4ff',
-    fontSize: 13,
+  headerElapsedValue: {
+    color: theme.colors.textPrimary,
+    fontSize: theme.fontSize.lg,
     fontWeight: '900',
+    fontVariant: ['tabular-nums'],
   },
   errorText: {
     color: theme.colors.danger,
     fontWeight: '700',
-    marginTop: 4,
-    maxWidth: 280,
+    maxWidth: 260,
+    fontSize: theme.fontSize.sm,
   },
   finishButton: {
-    minHeight: 44,
-    borderRadius: 12,
+    minHeight: 36,
+    borderRadius: theme.radius.md,
     borderWidth: 1,
-    borderColor: '#4f7ab0',
-    backgroundColor: '#1d2f4a',
+    borderColor: theme.colors.borderFocus,
+    backgroundColor: theme.colors.bg3,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 16,
+    paddingHorizontal: 12,
   },
   finishButtonText: {
-    color: '#d5e6ff',
-    fontWeight: '900',
-    fontSize: 13,
-    textTransform: 'uppercase',
+    color: theme.colors.textPrimary,
+    fontWeight: '800',
+    fontSize: theme.fontSize.sm,
     letterSpacing: 0.3,
   },
+  backdateBanner: {
+    minHeight: 26,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: theme.colors.warning,
+    backgroundColor: '#3a2a12',
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+  },
+  backdateBannerText: {
+    color: theme.colors.warning,
+    fontSize: theme.fontSize.xs,
+    fontWeight: '800',
+    letterSpacing: 0.2,
+  },
   scrollContent: {
-    padding: 12,
-    gap: 10,
+    padding: theme.spacing.md,
+    gap: theme.spacing.sm,
     paddingBottom: 148,
+    backgroundColor: theme.colors.bg1,
   },
   setupCard: {
-    borderRadius: 14,
+    borderRadius: theme.radius.lg,
     borderWidth: 1,
-    borderColor: '#2c4162',
-    backgroundColor: '#111a2b',
-    padding: 14,
-    gap: 14,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg2,
+    padding: theme.spacing.lg,
+    gap: theme.spacing.lg,
   },
   setupTitle: {
     color: theme.colors.textPrimary,
     fontWeight: '900',
-    fontSize: 18,
+    fontSize: theme.fontSize.xl,
   },
   setupSubtitle: {
     color: theme.colors.textSecondary,
     fontWeight: '600',
-    fontSize: 13,
+    fontSize: theme.fontSize.sm,
     lineHeight: 18,
   },
   progressCard: {
-    borderRadius: 14,
+    borderRadius: theme.radius.md,
     borderWidth: 1,
-    borderColor: '#365377',
-    backgroundColor: '#122036',
-    padding: 12,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg2,
+    padding: theme.spacing.md,
     gap: 6,
   },
   progressTitle: {
-    color: '#e4efff',
+    color: theme.colors.textPrimary,
     fontWeight: '800',
-    fontSize: 13,
+    fontSize: theme.fontSize.sm,
+    fontVariant: ['tabular-nums'],
   },
   progressSubtitle: {
-    color: '#9bb8dd',
+    color: theme.colors.textSecondary,
     fontWeight: '600',
-    fontSize: 12,
+    fontSize: theme.fontSize.sm,
     lineHeight: 17,
   },
   inputGroup: {
-    gap: 6,
+    gap: theme.spacing.xs,
   },
   inputLabel: {
     color: theme.colors.textSecondary,
     fontWeight: '700',
-    fontSize: 12,
+    fontSize: theme.fontSize.sm,
   },
   textInput: {
     minHeight: 44,
-    borderRadius: 10,
+    borderRadius: theme.radius.md,
     borderWidth: 1,
-    borderColor: '#344a6a',
-    backgroundColor: '#0d1625',
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg1,
     color: theme.colors.textPrimary,
     paddingHorizontal: 12,
   },
@@ -1069,83 +1417,90 @@ const styles = StyleSheet.create({
     paddingTop: 12,
   },
   previewCard: {
-    borderRadius: 12,
+    borderRadius: theme.radius.md,
     borderWidth: 1,
     borderColor: theme.colors.border,
-    backgroundColor: '#0c1422',
+    backgroundColor: theme.colors.bg1,
     padding: 10,
     gap: 4,
   },
   previewTitle: {
-    color: '#d9e8ff',
+    color: theme.colors.textPrimary,
     fontWeight: '800',
-    fontSize: 12,
-    textTransform: 'uppercase',
+    fontSize: theme.fontSize.sm,
     letterSpacing: 0.2,
   },
   previewRow: {
     color: theme.colors.textSecondary,
     fontWeight: '600',
-    fontSize: 12,
+    fontSize: theme.fontSize.sm,
     lineHeight: 17,
   },
   primaryButton: {
-    minHeight: 52,
-    borderRadius: 12,
+    minHeight: 54,
+    borderRadius: theme.radius.md,
     backgroundColor: theme.colors.accent,
     alignItems: 'center',
     justifyContent: 'center',
   },
   primaryButtonDisabled: {
-    backgroundColor: '#3f5269',
+    backgroundColor: theme.colors.bg3,
   },
   primaryButtonText: {
-    color: '#06170f',
-    fontSize: 16,
+    color: '#03241d',
+    fontSize: theme.fontSize.md,
     fontWeight: '900',
+    letterSpacing: 0.3,
   },
   secondaryButton: {
-    minHeight: 46,
-    borderRadius: 10,
+    minHeight: 44,
+    borderRadius: theme.radius.md,
     borderWidth: 1,
-    borderColor: '#406491',
-    backgroundColor: '#172945',
+    borderColor: theme.colors.borderFocus,
+    backgroundColor: theme.colors.bg3,
     alignItems: 'center',
     justifyContent: 'center',
   },
   secondaryButtonText: {
-    color: '#d7e8ff',
-    fontWeight: '900',
-    fontSize: 13,
-    textTransform: 'uppercase',
+    color: theme.colors.textPrimary,
+    fontWeight: '800',
+    fontSize: theme.fontSize.sm,
     letterSpacing: 0.2,
   },
   loggedSetList: {
     gap: 6,
   },
   loggedSetRow: {
-    minHeight: 44,
-    borderRadius: 10,
-    backgroundColor: '#0f1b2f',
+    minHeight: 40,
+    borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.bg1,
     borderWidth: 1,
-    borderColor: '#2e4568',
+    borderColor: theme.colors.border,
     justifyContent: 'center',
     paddingHorizontal: 10,
   },
   loggedSetText: {
-    color: '#c5d6ed',
+    color: theme.colors.textPrimary,
     fontWeight: '700',
-    fontSize: 13,
+    fontSize: theme.fontSize.sm,
+    fontVariant: ['tabular-nums'],
+  },
+  loggedSetEffort: {
+    fontWeight: '800',
+  },
+  loggedSetWarmup: {
+    color: theme.colors.textMuted,
+    fontSize: theme.fontSize.sm,
   },
   restTimerBar: {
     position: 'absolute',
     left: 12,
     right: 12,
     bottom: 10,
-    borderRadius: 12,
-    backgroundColor: '#10243d',
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.bg2,
     borderWidth: 1,
-    borderColor: '#3f689b',
+    borderColor: theme.colors.border,
     padding: 10,
     gap: 8,
   },
@@ -1156,28 +1511,39 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   restTimerText: {
-    color: '#d8e8ff',
+    color: theme.colors.textSecondary,
+    fontWeight: '700',
+    fontSize: theme.fontSize.sm,
+    fontVariant: ['tabular-nums'],
+  },
+  restTimeBig: {
+    color: theme.colors.textPrimary,
     fontWeight: '900',
+    fontSize: theme.fontSize.xxl,
+    lineHeight: 30,
+    fontVariant: ['tabular-nums'],
   },
   restStatusBadge: {
     minHeight: 22,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: '#4c7ab4',
-    backgroundColor: '#173455',
+    borderColor: theme.colors.borderFocus,
+    backgroundColor: theme.colors.bg3,
     justifyContent: 'center',
     paddingHorizontal: 8,
   },
   restStatusText: {
-    color: '#d6e8ff',
-    fontSize: 10,
-    fontWeight: '900',
+    color: theme.colors.textSecondary,
+    fontSize: theme.fontSize.xs,
+    fontWeight: '800',
     letterSpacing: 0.2,
   },
   restProgressTrack: {
     height: 8,
     borderRadius: 999,
-    backgroundColor: '#1f3654',
+    backgroundColor: theme.colors.bg1,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
     overflow: 'hidden',
   },
   restProgressFill: {
@@ -1191,18 +1557,17 @@ const styles = StyleSheet.create({
   },
   restActionButton: {
     minHeight: 36,
-    borderRadius: 8,
+    borderRadius: theme.radius.sm,
     borderWidth: 1,
-    borderColor: '#4d7bb5',
+    borderColor: theme.colors.borderFocus,
     justifyContent: 'center',
     paddingHorizontal: 10,
-    backgroundColor: '#173455',
+    backgroundColor: theme.colors.bg3,
   },
   restActionText: {
-    color: '#d8e8ff',
+    color: theme.colors.textPrimary,
     fontWeight: '700',
-    fontSize: 12,
-    textTransform: 'uppercase',
+    fontSize: theme.fontSize.sm,
   },
   sheetBackdrop: {
     ...StyleSheet.absoluteFillObject,
@@ -1210,55 +1575,168 @@ const styles = StyleSheet.create({
   },
   sheetDismissArea: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.42)',
+    backgroundColor: 'rgba(0,0,0,0.58)',
   },
   sheet: {
-    borderTopLeftRadius: 18,
-    borderTopRightRadius: 18,
+    borderTopLeftRadius: theme.radius.xl,
+    borderTopRightRadius: theme.radius.xl,
     borderWidth: 1,
-    borderColor: '#334c72',
+    borderColor: theme.colors.border,
     borderBottomWidth: 0,
-    backgroundColor: '#101a2b',
-    padding: 14,
-    gap: 10,
+    backgroundColor: theme.colors.bg2,
+    padding: theme.spacing.lg,
+    gap: theme.spacing.sm,
   },
   sheetTitle: {
     color: theme.colors.textPrimary,
-    fontSize: 19,
-    fontWeight: '900',
+    fontSize: theme.fontSize.xl,
+    fontWeight: '800',
   },
   sheetSubtitle: {
     color: theme.colors.textSecondary,
     fontWeight: '600',
-    fontSize: 12,
+    fontSize: theme.fontSize.sm,
   },
   sheetOption: {
     minHeight: 46,
-    borderRadius: 10,
+    borderRadius: theme.radius.md,
     borderWidth: 1,
-    borderColor: '#355274',
+    borderColor: theme.colors.border,
     justifyContent: 'center',
     paddingHorizontal: 12,
-    backgroundColor: '#16253d',
+    backgroundColor: theme.colors.bg3,
   },
   sheetOptionSelected: {
-    borderColor: '#4aa987',
-    backgroundColor: '#153c30',
+    borderColor: theme.colors.accent,
+    backgroundColor: theme.colors.accentDim,
   },
   sheetOptionText: {
-    color: '#dce9ff',
-    fontWeight: '800',
+    color: theme.colors.textPrimary,
+    fontWeight: '700',
   },
   sheetOptionTextSelected: {
-    color: '#b6f2d7',
+    color: theme.colors.accent,
+  },
+  sheetCustomButton: {
+    minHeight: 44,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.borderFocus,
+    backgroundColor: theme.colors.bg3,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+  },
+  sheetCustomButtonText: {
+    color: theme.colors.textPrimary,
+    fontWeight: '800',
+    fontSize: theme.fontSize.sm,
+  },
+  customFormCard: {
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg1,
+    padding: 10,
+    gap: 8,
+  },
+  customFormLabel: {
+    color: theme.colors.textSecondary,
+    fontWeight: '700',
+    fontSize: theme.fontSize.sm,
+  },
+  customFormInput: {
+    minHeight: 42,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg2,
+    color: theme.colors.textPrimary,
+    paddingHorizontal: 10,
+    fontWeight: '700',
+  },
+  customCategoryRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  customCategoryButton: {
+    minHeight: 34,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg2,
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+  },
+  customCategoryButtonSelected: {
+    borderColor: theme.colors.accent,
+    backgroundColor: theme.colors.accentDim,
+  },
+  customCategoryText: {
+    color: theme.colors.textSecondary,
+    fontWeight: '800',
+    fontSize: theme.fontSize.xs,
+  },
+  customCategoryTextSelected: {
+    color: theme.colors.accent,
+  },
+  customMuscleGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  customMuscleButton: {
+    minHeight: 34,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg2,
+    justifyContent: 'center',
+    paddingHorizontal: 8,
+  },
+  customMuscleButtonSelected: {
+    borderColor: theme.colors.accent,
+    backgroundColor: theme.colors.accentDim,
+  },
+  customMuscleButtonSecondarySelected: {
+    borderColor: theme.colors.warning,
+    backgroundColor: '#3d2a10',
+  },
+  customMuscleText: {
+    color: theme.colors.textSecondary,
+    fontSize: theme.fontSize.xs,
+    fontWeight: '700',
+  },
+  customMuscleTextSelected: {
+    color: theme.colors.textPrimary,
+  },
+  sheetCreateButton: {
+    minHeight: 44,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.accent,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sheetCreateButtonDisabled: {
+    backgroundColor: theme.colors.bg3,
+  },
+  sheetCreateButtonText: {
+    color: '#03241d',
+    fontWeight: '900',
+    fontSize: theme.fontSize.sm,
   },
   summaryText: {
     color: theme.colors.textSecondary,
     fontWeight: '600',
+    fontVariant: ['tabular-nums'],
   },
   warningText: {
     color: theme.colors.warning,
     fontWeight: '700',
     lineHeight: 20,
+  },
+  pressed: {
+    opacity: 0.7,
   },
 });
