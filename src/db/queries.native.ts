@@ -422,6 +422,12 @@ export async function getWorkoutSets(workoutId: string): Promise<LoggedSet[]> {
   });
 }
 
+export async function deleteSet(setId: number): Promise<void> {
+  await withDatabase('deleteSet', async (database) => {
+    await database.runAsync('DELETE FROM sets WHERE id = ?;', [setId]);
+  });
+}
+
 export async function updateSet(input: {
   setId: number;
   reps: number;
@@ -802,6 +808,41 @@ export async function getWorkoutHistory(
       durationMinutes: Math.max(0, row.duration_minutes ?? 0),
       totalSets: row.total_sets,
     }));
+  });
+}
+
+export async function getWorkoutExerciseSummaries(
+  workoutIds: string[]
+): Promise<Record<string, string[]>> {
+  if (workoutIds.length === 0) return {};
+  return withDatabase('getWorkoutExerciseSummaries', async (database) => {
+    const placeholders = workoutIds.map(() => '?').join(',');
+    const rows = await database.getAllAsync<{
+      workout_id: string;
+      exercise_name: string;
+      top_load: number;
+    }>(
+      `SELECT
+        s.workout_id,
+        e.name AS exercise_name,
+        MAX(s.load_kg) AS top_load
+      FROM sets s
+      JOIN exercises e ON e.id = s.exercise_id
+      WHERE s.workout_id IN (${placeholders})
+        AND s.is_warmup = 0
+      GROUP BY s.workout_id, s.exercise_id
+      ORDER BY s.workout_id, MIN(s.logged_at) ASC;`,
+      workoutIds
+    );
+
+    const result: Record<string, string[]> = {};
+    for (const row of rows) {
+      if (!result[row.workout_id]) {
+        result[row.workout_id] = [];
+      }
+      result[row.workout_id].push(`${row.exercise_name} ${row.top_load}kg`);
+    }
+    return result;
   });
 }
 

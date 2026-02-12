@@ -153,6 +153,7 @@ export interface WorkoutHistoryItem {
   prsScore: number | null;
   durationMinutes: number;
   totalSets: number;
+  exerciseSummary?: string;
 }
 
 export interface WorkoutDetailSet {

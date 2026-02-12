@@ -1,5 +1,7 @@
 import { Stack } from 'expo-router';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import { StatusBar } from 'expo-status-bar';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { useEffect, useState } from 'react';
 import { initializeDatabase } from '../db/queries';
 import { useSettingsStore } from '../stores/settingsStore';
@@ -40,23 +42,42 @@ export default function RootLayout() {
 
   if (error) {
     return (
-      <View style={styles.centeredScreen}>
-        <Text style={styles.errorTitle}>Failed to start app</Text>
-        <Text style={styles.errorText}>{error}</Text>
-      </View>
+      <SafeAreaProvider>
+        <SafeAreaView style={styles.centeredScreen}>
+          <StatusBar style="light" />
+          <Text style={styles.errorTitle}>Failed to start app</Text>
+          <Text style={styles.errorText}>{error}</Text>
+        </SafeAreaView>
+      </SafeAreaProvider>
     );
   }
 
   if (!isReady) {
     return (
-      <View style={styles.centeredScreen}>
-        <ActivityIndicator color={theme.colors.accent} size="large" />
-        <Text style={styles.loadingText}>Preparing your tracker...</Text>
-      </View>
+      <SafeAreaProvider>
+        <SafeAreaView style={styles.centeredScreen}>
+          <StatusBar style="light" />
+          <ActivityIndicator color={theme.colors.accent} size="large" />
+          <Text style={styles.loadingText}>Preparing your tracker...</Text>
+        </SafeAreaView>
+      </SafeAreaProvider>
     );
   }
 
-  return <Stack />;
+  return (
+    <SafeAreaProvider>
+      <StatusBar style="light" />
+      <Stack
+        screenOptions={{
+          headerStyle: { backgroundColor: theme.colors.background },
+          headerTintColor: theme.colors.textPrimary,
+          headerTitleStyle: { fontWeight: '800' },
+          headerShadowVisible: false,
+          contentStyle: { backgroundColor: theme.colors.background },
+        }}
+      />
+    </SafeAreaProvider>
+  );
 }
 
 const styles = StyleSheet.create({
