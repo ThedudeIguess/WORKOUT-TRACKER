@@ -248,6 +248,24 @@ export interface StrengthTrendPoint {
   bestSetLoadKg: number;
 }
 
+export interface ProgressionRateResult {
+  exerciseId: string;
+  actualRateKgPerWeek: number;
+  weeksOfData: number;
+  sessionCount: number;
+  referenceRateKgPerWeek: number | null;
+  referenceCaveat: string | null;
+  referenceLabel: string | null;
+  hasEnoughData: boolean;
+}
+
+export interface TrainingPhaseInfo {
+  phase: 'neural' | 'transition' | 'hypertrophic';
+  title: string;
+  description: string;
+  citation: string;
+}
+
 export interface ExportPayload {
   exportedAt: string;
   workouts: Workout[];

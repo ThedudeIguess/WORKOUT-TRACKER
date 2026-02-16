@@ -29,6 +29,7 @@ const APP_SETTING_FIRST_WORKOUT_ANCHOR = 'first_workout_timestamp';
 const APP_SETTING_THEME = 'theme';
 const APP_SETTING_DEFAULT_REST_SECONDS = 'default_rest_seconds';
 const APP_SETTING_UNITS = 'units';
+const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 interface InMemoryState {
   initialized: boolean;
@@ -181,6 +182,15 @@ function ensureInitialized(): void {
   state.initialized = true;
 }
 
+function getEarliestCompletedWorkoutStartedAt(): string | null {
+  const earliest = state.workouts
+    .filter((workout) => workout.completedAt !== null)
+    .slice()
+    .sort((left, right) => parseIso(left.startedAt) - parseIso(right.startedAt))[0];
+
+  return earliest?.startedAt ?? null;
+}
+
 export async function initializeDatabase(): Promise<void> {
   ensureInitialized();
 }
@@ -258,14 +268,11 @@ export async function completeWorkoutSession(input: {
   workout.completedAt = input.completedAt ?? new Date().toISOString();
   workout.notes = input.notes;
 
-  if (!state.appSettings.has(APP_SETTING_FIRST_WORKOUT_ANCHOR)) {
-    const earliestCompleted = state.workouts
-      .filter((candidate) => candidate.completedAt !== null)
-      .sort((left, right) => parseIso(left.completedAt) - parseIso(right.completedAt))[0];
-
-    if (earliestCompleted?.completedAt) {
-      state.appSettings.set(APP_SETTING_FIRST_WORKOUT_ANCHOR, earliestCompleted.completedAt);
-    }
+  const anchor = getEarliestCompletedWorkoutStartedAt();
+  if (anchor) {
+    state.appSettings.set(APP_SETTING_FIRST_WORKOUT_ANCHOR, anchor);
+  } else {
+    state.appSettings.delete(APP_SETTING_FIRST_WORKOUT_ANCHOR);
   }
 }
 
@@ -660,6 +667,72 @@ export async function getWeekStats(
   return {
     workoutsThisWeek: workouts.length,
     setsThisWeek,
+  };
+}
+
+export async function getAdherenceStats(
+  windowStartIso: string,
+  windowEndIso: string,
+  plannedPerWeek: number
+): Promise<{
+  completed: number;
+  planned: number;
+  percentage: number;
+  weeklyBreakdown: { weekStartIso: string; count: number }[];
+}> {
+  ensureInitialized();
+
+  const windowStartMs = parseIso(windowStartIso);
+  const windowEndMs = parseIso(windowEndIso);
+
+  if (!Number.isFinite(windowStartMs) || !Number.isFinite(windowEndMs)) {
+    throw new Error('Invalid adherence window dates.');
+  }
+
+  if (windowEndMs <= windowStartMs) {
+    throw new Error('Adherence window end must be after start.');
+  }
+
+  const workouts = state.workouts
+    .filter((workout) => {
+      if (!workout.completedAt) {
+        return false;
+      }
+
+      const startedAt = parseIso(workout.startedAt);
+      return startedAt >= windowStartMs && startedAt < windowEndMs;
+    })
+    .slice()
+    .sort((left, right) => parseIso(left.startedAt) - parseIso(right.startedAt));
+
+  const totalWeeks = Math.max(
+    1,
+    Math.ceil((windowEndMs - windowStartMs) / ONE_WEEK_MS)
+  );
+  const safePlannedPerWeek = Math.max(0, Math.floor(plannedPerWeek));
+  const weeklyBreakdown = Array.from({ length: totalWeeks }, (_, index) => ({
+    weekStartIso: new Date(windowStartMs + index * ONE_WEEK_MS).toISOString(),
+    count: 0,
+  }));
+
+  for (const workout of workouts) {
+    const startedAt = parseIso(workout.startedAt);
+    const weekIndex = Math.floor((startedAt - windowStartMs) / ONE_WEEK_MS);
+    if (weekIndex < 0 || weekIndex >= weeklyBreakdown.length) {
+      continue;
+    }
+    weeklyBreakdown[weekIndex].count += 1;
+  }
+
+  const completed = workouts.length;
+  const planned = safePlannedPerWeek * totalWeeks;
+  const percentage = planned > 0 ? (completed / planned) * 100 : 0;
+
+  return {
+    completed,
+    planned,
+    percentage,
+    weeklyBreakdown,
   };
 }
 
@@ -1061,15 +1134,9 @@ export async function restoreFromExportData(payload: ExportPayload): Promise<{
   state.nextSetId = maxSetId + 1;
   state.nextBodyweightId = maxBodyweightId + 1;
 
-  const earliestCompletedWorkout = state.workouts
-    .filter((workout) => workout.completedAt !== null)
-    .slice()
-    .sort((left, right) =>
-      parseIso(left.completedAt) - parseIso(right.completedAt)
-    )[0];
-
-  if (earliestCompletedWorkout?.completedAt) {
-    state.appSettings.set(APP_SETTING_FIRST_WORKOUT_ANCHOR, earliestCompletedWorkout.completedAt);
+  const anchor = getEarliestCompletedWorkoutStartedAt();
+  if (anchor) {
+    state.appSettings.set(APP_SETTING_FIRST_WORKOUT_ANCHOR, anchor);
   } else {
     state.appSettings.delete(APP_SETTING_FIRST_WORKOUT_ANCHOR);
   }
@@ -1083,5 +1150,18 @@ export async function restoreFromExportData(payload: ExportPayload): Promise<{
 
 export async function getFirstWorkoutAnchor(): Promise<string | null> {
   ensureInitialized();
-  return state.appSettings.get(APP_SETTING_FIRST_WORKOUT_ANCHOR) ?? null;
+  const persisted = state.appSettings.get(APP_SETTING_FIRST_WORKOUT_ANCHOR) ?? null;
+  const inferred = getEarliestCompletedWorkoutStartedAt();
+  if (!inferred) {
+    if (persisted) {
+      state.appSettings.delete(APP_SETTING_FIRST_WORKOUT_ANCHOR);
+    }
+    return null;
+  }
+
+  if (persisted !== inferred) {
+    state.appSettings.set(APP_SETTING_FIRST_WORKOUT_ANCHOR, inferred);
+  }
+
+  return inferred;
 }

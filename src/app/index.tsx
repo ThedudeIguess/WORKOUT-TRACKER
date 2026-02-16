@@ -14,13 +14,19 @@ import {
 import { theme } from '../constants/theme';
 import {
   getActiveWorkout,
+  getAdherenceStats,
   getFirstWorkoutAnchor,
   getNextDayTemplate,
   getWeekStats,
   listProgramDayTemplates,
 } from '../db/queries';
-import type { ActiveWorkoutSummary, DayTemplateWithSlots } from '../types';
+import type {
+  ActiveWorkoutSummary,
+  DayTemplateWithSlots,
+  TrainingPhaseInfo,
+} from '../types';
 import { getRollingWeekWindow } from '../utils/rollingWeek';
+import { getTrainingPhase } from '../utils/trainingPhase';
 
 interface QuickLinkItem {
   id: string;
@@ -35,12 +41,33 @@ const quickLinks: QuickLinkItem[] = [
   { id: 'settings', title: 'Settings', route: '/settings' },
 ];
 
+const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+
+interface AdherenceStats {
+  completed: number;
+  planned: number;
+  percentage: number;
+  weeklyBreakdown: { weekStartIso: string; count: number }[];
+}
+
 function shortExerciseName(name: string): string {
   return name
     .replace('Barbell ', '')
     .replace('Dumbbell ', '')
     .replace('Machine ', '')
     .replace('(Glute Focus)', '');
+}
+
+function toEndOfDay(date: Date): Date {
+  const next = new Date(date);
+  next.setHours(23, 59, 59, 999);
+  return next;
+}
+
+function toLocalNoon(date: Date): Date {
+  const next = new Date(date);
+  next.setHours(12, 0, 0, 0);
+  return next;
 }
 
 export default function HomeScreen() {
@@ -52,10 +79,20 @@ export default function HomeScreen() {
   const [activeWorkout, setActiveWorkout] = useState<ActiveWorkoutSummary | null>(null);
   const [nextDayTemplate, setNextDayTemplate] = useState<DayTemplateWithSlots | null>(null);
   const [dayTemplates, setDayTemplates] = useState<DayTemplateWithSlots[]>([]);
-  const [firstWorkoutAnchor, setFirstWorkoutAnchor] = useState<string | null>(null);
   const [weekLabel, setWeekLabel] = useState('Week 0');
   const [weekRangeLabel, setWeekRangeLabel] = useState('');
   const [weekStats, setWeekStats] = useState({ workoutsThisWeek: 0, setsThisWeek: 0 });
+  const [adherenceStats, setAdherenceStats] = useState<AdherenceStats>({
+    completed: 0,
+    planned: 0,
+    percentage: 0,
+    weeklyBreakdown: [],
+  });
+  const [trainingAgeWeeks, setTrainingAgeWeeks] = useState<number | null>(null);
+  const [trainingPhaseInfo, setTrainingPhaseInfo] = useState<TrainingPhaseInfo | null>(
+    null
+  );
+  const [isTrainingPhaseExpanded, setIsTrainingPhaseExpanded] = useState(false);
   const [showBackdatePicker, setShowBackdatePicker] = useState(false);
   const [showDayPicker, setShowDayPicker] = useState(false);
   const [pendingBackdateIso, setPendingBackdateIso] = useState<string | null>(null);
@@ -90,22 +127,16 @@ export default function HomeScreen() {
 
   const clampBackdate = useCallback(
     (value: Date) => {
-      const maxDate = new Date();
-      maxDate.setHours(23, 59, 59, 999);
+      const normalized = toLocalNoon(value);
+      const maxDate = toEndOfDay(new Date());
 
-      const minDate = firstWorkoutAnchor ? new Date(firstWorkoutAnchor) : null;
-
-      if (value.getTime() > maxDate.getTime()) {
-        return maxDate;
+      if (normalized.getTime() > maxDate.getTime()) {
+        return toLocalNoon(maxDate);
       }
 
-      if (minDate && value.getTime() < minDate.getTime()) {
-        return minDate;
-      }
-
-      return value;
+      return normalized;
     },
-    [firstWorkoutAnchor]
+    []
   );
 
   const refresh = useCallback(async () => {
@@ -121,24 +152,40 @@ export default function HomeScreen() {
       setActiveWorkout(active);
       setNextDayTemplate(nextTemplate);
       setDayTemplates(templates);
-      setFirstWorkoutAnchor(anchor);
 
       const nowIso = new Date().toISOString();
       const weekWindow = getRollingWeekWindow(nowIso, anchor ?? nowIso);
       const start = new Date(weekWindow.startIso).toLocaleDateString();
       const end = new Date(weekWindow.endIso).toLocaleDateString();
+      const plannedPerWeek = Math.max(1, templates.length || 6);
+      const adherenceWindowStartIso = new Date(
+        new Date(weekWindow.startIso).getTime() - 3 * ONE_WEEK_MS
+      ).toISOString();
 
       setWeekLabel(`Week ${weekWindow.weekNumber + 1}`);
       setWeekRangeLabel(`${start} - ${end}`);
 
-      const stats = await getWeekStats(weekWindow.startIso, weekWindow.endIso);
+      const [stats, adherence] = await Promise.all([
+        getWeekStats(weekWindow.startIso, weekWindow.endIso),
+        getAdherenceStats(
+          adherenceWindowStartIso,
+          weekWindow.endIso,
+          plannedPerWeek
+        ),
+      ]);
       setWeekStats(stats);
+      setAdherenceStats(adherence);
 
       if (anchor) {
-        const anchorDate = new Date(anchor);
-        setBackdateDate((current) =>
-          current.getTime() < anchorDate.getTime() ? anchorDate : current
+        const weeksTraining = Math.max(
+          0,
+          (Date.now() - new Date(anchor).getTime()) / ONE_WEEK_MS
         );
+        setTrainingAgeWeeks(weeksTraining);
+        setTrainingPhaseInfo(getTrainingPhase(weeksTraining));
+      } else {
+        setTrainingAgeWeeks(null);
+        setTrainingPhaseInfo(null);
       }
     } finally {
       setLoading(false);
@@ -200,6 +247,32 @@ export default function HomeScreen() {
     }),
     [activeWorkout, weekStats]
   );
+
+  const adherenceColor =
+    adherenceStats.percentage >= 80
+      ? theme.colors.accent
+      : adherenceStats.percentage >= 60
+        ? theme.colors.warning
+        : theme.colors.danger;
+
+  const adherenceBarMax = useMemo(() => {
+    const weeklyMax = Math.max(
+      1,
+      ...adherenceStats.weeklyBreakdown.map((entry) => entry.count)
+    );
+    const plannedPerWeek = adherenceStats.weeklyBreakdown.length > 0
+      ? adherenceStats.planned / adherenceStats.weeklyBreakdown.length
+      : 1;
+    return Math.max(weeklyMax, plannedPerWeek);
+  }, [adherenceStats.planned, adherenceStats.weeklyBreakdown]);
+
+  const phaseBorderColor = trainingPhaseInfo
+    ? trainingPhaseInfo.phase === 'neural'
+      ? theme.colors.info
+      : trainingPhaseInfo.phase === 'transition'
+        ? theme.colors.warning
+        : theme.colors.accent
+    : theme.colors.borderFocus;
 
   const handleStartPress = () => {
     if (activeWorkout) {
@@ -264,6 +337,44 @@ export default function HomeScreen() {
           <Text style={styles.heroRange}>{weekRangeLabel}</Text>
         </View>
 
+        <View style={[styles.phaseCard, { borderLeftColor: phaseBorderColor }]}>
+          <Text style={styles.phaseTag}>TRAINING PHASE</Text>
+          {trainingPhaseInfo ? (
+            <>
+              <Text style={styles.phaseTitle}>{trainingPhaseInfo.title}</Text>
+              <Text style={styles.phaseWeekLabel}>
+                Week {Math.floor((trainingAgeWeeks ?? 0) + 1)} of training
+              </Text>
+              <Text
+                style={styles.phaseDescription}
+                numberOfLines={isTrainingPhaseExpanded ? undefined : 2}
+              >
+                {trainingPhaseInfo.description}
+              </Text>
+              <Pressable
+                onPress={() =>
+                  setIsTrainingPhaseExpanded((current) => !current)
+                }
+                style={({ pressed }) => [styles.phaseReadMore, pressed && styles.pressed]}
+              >
+                <Text style={styles.phaseReadMoreText}>
+                  {isTrainingPhaseExpanded ? 'Show less' : 'Read more'}
+                </Text>
+              </Pressable>
+              {isTrainingPhaseExpanded ? (
+                <Text style={styles.phaseCitation}>
+                  Based on: {trainingPhaseInfo.citation}. Approximate phases -
+                  individual timelines vary.
+                </Text>
+              ) : null}
+            </>
+          ) : (
+            <Text style={styles.phaseDescription}>
+              Complete your first workout to unlock a training-phase context.
+            </Text>
+          )}
+        </View>
+
         <View style={styles.statsRow}>
           <View style={styles.statCard}>
             <Text style={styles.statLabel}>WORKOUTS THIS WEEK</Text>
@@ -272,6 +383,46 @@ export default function HomeScreen() {
           <View style={styles.statCard}>
             <Text style={styles.statLabel}>SETS THIS WEEK</Text>
             <Text style={styles.statValue}>{weekStats.setsThisWeek}</Text>
+          </View>
+        </View>
+
+        <View style={styles.adherenceCard}>
+          <Text style={styles.adherenceTag}>ADHERENCE</Text>
+          <Text style={[styles.adherenceValue, { color: adherenceColor }]}>
+            {adherenceStats.percentage.toFixed(0)}%
+          </Text>
+          <Text style={styles.adherenceSubtitle}>
+            {adherenceStats.completed} of {adherenceStats.planned} planned sessions
+            {' '} (last 4 weeks)
+          </Text>
+          {adherenceStats.percentage < 80 ? (
+            <Text style={styles.adherenceNote}>
+              Below 80% attendance is associated with reduced strength gains in novices
+              (Colquhoun et al., 2017).
+            </Text>
+          ) : null}
+
+          <View style={styles.adherenceBarsRow}>
+            {adherenceStats.weeklyBreakdown.map((entry, index) => {
+              const fillRatio = entry.count / adherenceBarMax;
+              return (
+                <View key={`${entry.weekStartIso}-${index}`} style={styles.adherenceBarColumn}>
+                  <Text style={styles.adherenceBarCount}>{entry.count}</Text>
+                  <View style={styles.adherenceBarTrack}>
+                    <View
+                      style={[
+                        styles.adherenceBarFill,
+                        {
+                          height: `${Math.max(8, Math.round(fillRatio * 100))}%`,
+                          backgroundColor: adherenceColor,
+                        },
+                      ]}
+                    />
+                  </View>
+                  <Text style={styles.adherenceBarLabel}>W{index + 1}</Text>
+                </View>
+              );
+            })}
           </View>
         </View>
 
@@ -337,8 +488,7 @@ export default function HomeScreen() {
             <DateTimePicker
               value={backdateDate}
               mode="date"
-              maximumDate={new Date()}
-              minimumDate={firstWorkoutAnchor ? new Date(firstWorkoutAnchor) : undefined}
+              maximumDate={toEndOfDay(new Date())}
               onChange={(_, selectedDate) => {
                 if (!selectedDate) {
                   return;
@@ -473,6 +623,53 @@ const styles = StyleSheet.create({
     fontSize: theme.fontSize.sm,
     fontVariant: ['tabular-nums'],
   },
+  phaseCard: {
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderLeftWidth: 4,
+    backgroundColor: theme.colors.bg2,
+    padding: theme.spacing.md,
+    gap: 4,
+  },
+  phaseTag: {
+    color: theme.colors.textSecondary,
+    fontSize: theme.fontSize.xs,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  phaseTitle: {
+    color: theme.colors.textPrimary,
+    fontSize: theme.fontSize.lg,
+    fontWeight: '800',
+  },
+  phaseWeekLabel: {
+    color: theme.colors.textMuted,
+    fontSize: theme.fontSize.sm,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  phaseDescription: {
+    color: theme.colors.textSecondary,
+    fontSize: theme.fontSize.sm,
+    lineHeight: 18,
+  },
+  phaseReadMore: {
+    alignSelf: 'flex-start',
+    minHeight: 28,
+    justifyContent: 'center',
+    paddingRight: 8,
+  },
+  phaseReadMoreText: {
+    color: theme.colors.info,
+    fontSize: theme.fontSize.sm,
+    fontWeight: '800',
+  },
+  phaseCitation: {
+    color: theme.colors.textMuted,
+    fontSize: theme.fontSize.xs,
+    lineHeight: 16,
+  },
   statsRow: {
     flexDirection: 'row',
     gap: theme.spacing.sm,
@@ -496,6 +693,76 @@ const styles = StyleSheet.create({
     color: theme.colors.textPrimary,
     fontSize: theme.fontSize.xxl,
     fontWeight: '900',
+    fontVariant: ['tabular-nums'],
+  },
+  adherenceCard: {
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg2,
+    padding: theme.spacing.md,
+    gap: theme.spacing.xs,
+  },
+  adherenceTag: {
+    color: theme.colors.textSecondary,
+    fontSize: theme.fontSize.xs,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  adherenceValue: {
+    fontSize: theme.fontSize.hero,
+    lineHeight: 40,
+    fontWeight: '900',
+    fontVariant: ['tabular-nums'],
+  },
+  adherenceSubtitle: {
+    color: theme.colors.textMuted,
+    fontSize: theme.fontSize.sm,
+    fontVariant: ['tabular-nums'],
+  },
+  adherenceNote: {
+    color: theme.colors.warning,
+    fontSize: theme.fontSize.xs,
+    lineHeight: 16,
+    marginTop: 2,
+  },
+  adherenceBarsRow: {
+    flexDirection: 'row',
+    gap: theme.spacing.sm,
+    marginTop: theme.spacing.xs,
+  },
+  adherenceBarColumn: {
+    flex: 1,
+    alignItems: 'center',
+    gap: 4,
+  },
+  adherenceBarCount: {
+    color: theme.colors.textSecondary,
+    fontSize: theme.fontSize.xs,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  adherenceBarTrack: {
+    width: '100%',
+    maxWidth: 34,
+    height: 44,
+    borderRadius: theme.radius.sm,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg1,
+    justifyContent: 'flex-end',
+    overflow: 'hidden',
+  },
+  adherenceBarFill: {
+    width: '100%',
+    minHeight: 8,
+    borderTopLeftRadius: theme.radius.sm,
+    borderTopRightRadius: theme.radius.sm,
+  },
+  adherenceBarLabel: {
+    color: theme.colors.textMuted,
+    fontSize: theme.fontSize.xs,
+    fontWeight: '700',
     fontVariant: ['tabular-nums'],
   },
   nextCard: {

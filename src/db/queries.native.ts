@@ -27,6 +27,7 @@ const APP_SETTING_FIRST_WORKOUT_ANCHOR = 'first_workout_timestamp';
 const APP_SETTING_THEME = 'theme';
 const APP_SETTING_DEFAULT_REST_SECONDS = 'default_rest_seconds';
 const APP_SETTING_UNITS = 'units';
+const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 interface DayTemplateRow {
   id: number;
@@ -113,6 +114,15 @@ interface AppSettingRow {
 interface WeekStatsRow {
   workouts_this_week: number;
   sets_this_week: number;
+}
+
+interface AdherenceWorkoutRow {
+  workout_id: string;
+  started_at: string;
+}
+
+interface AnchorRow {
+  anchor: string;
 }
 
 interface ExerciseOptionRow {
@@ -316,28 +326,25 @@ export async function completeWorkoutSession(input: {
         [completedAt, input.notes, input.workoutId]
       );
 
-      const anchor = await transaction.getFirstAsync<AppSettingRow>(
-        'SELECT value FROM app_settings WHERE key = ?;',
-        [APP_SETTING_FIRST_WORKOUT_ANCHOR]
+      const earliestStartedCompletedWorkout = await transaction.getFirstAsync<AnchorRow>(
+        `SELECT started_at AS anchor
+         FROM workouts
+         WHERE completed_at IS NOT NULL
+         ORDER BY started_at ASC
+         LIMIT 1;`
       );
 
-      if (!anchor) {
-        const earliestCompletedWorkout = await transaction.getFirstAsync<AppSettingRow>(
-          `SELECT completed_at as value
-           FROM workouts
-           WHERE completed_at IS NOT NULL
-           ORDER BY completed_at ASC
-           LIMIT 1;`
+      if (earliestStartedCompletedWorkout?.anchor) {
+        await transaction.runAsync(
+          `INSERT INTO app_settings (key, value)
+           VALUES (?, ?)
+           ON CONFLICT(key) DO UPDATE SET value = excluded.value;`,
+          [APP_SETTING_FIRST_WORKOUT_ANCHOR, earliestStartedCompletedWorkout.anchor]
         );
-
-        if (earliestCompletedWorkout?.value) {
-          await transaction.runAsync(
-            `INSERT INTO app_settings (key, value)
-             VALUES (?, ?)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value;`,
-            [APP_SETTING_FIRST_WORKOUT_ANCHOR, earliestCompletedWorkout.value]
-          );
-        }
+      } else {
+        await transaction.runAsync('DELETE FROM app_settings WHERE key = ?;', [
+          APP_SETTING_FIRST_WORKOUT_ANCHOR,
+        ]);
       }
     });
   });
@@ -961,6 +968,77 @@ export async function getWeekStats(
   });
 }
 
+export async function getAdherenceStats(
+  windowStartIso: string,
+  windowEndIso: string,
+  plannedPerWeek: number
+): Promise<{
+  completed: number;
+  planned: number;
+  percentage: number;
+  weeklyBreakdown: { weekStartIso: string; count: number }[];
+}> {
+  return withDatabase('getAdherenceStats', async (database) => {
+    const windowStartMs = new Date(windowStartIso).getTime();
+    const windowEndMs = new Date(windowEndIso).getTime();
+
+    if (!Number.isFinite(windowStartMs) || !Number.isFinite(windowEndMs)) {
+      throw new Error('Invalid adherence window dates.');
+    }
+
+    if (windowEndMs <= windowStartMs) {
+      throw new Error('Adherence window end must be after start.');
+    }
+
+    const workouts = await database.getAllAsync<AdherenceWorkoutRow>(
+      `SELECT DISTINCT
+        w.id AS workout_id,
+        w.started_at
+      FROM workouts w
+      WHERE w.completed_at IS NOT NULL
+        AND w.started_at >= ?
+        AND w.started_at < ?
+      ORDER BY w.started_at ASC;`,
+      [windowStartIso, windowEndIso]
+    );
+
+    const totalWeeks = Math.max(
+      1,
+      Math.ceil((windowEndMs - windowStartMs) / ONE_WEEK_MS)
+    );
+    const safePlannedPerWeek = Math.max(0, Math.floor(plannedPerWeek));
+    const weeklyBreakdown = Array.from({ length: totalWeeks }, (_, index) => ({
+      weekStartIso: new Date(windowStartMs + index * ONE_WEEK_MS).toISOString(),
+      count: 0,
+    }));
+
+    for (const workout of workouts) {
+      const startedAtMs = new Date(workout.started_at).getTime();
+      if (!Number.isFinite(startedAtMs)) {
+        continue;
+      }
+
+      const weekIndex = Math.floor((startedAtMs - windowStartMs) / ONE_WEEK_MS);
+      if (weekIndex < 0 || weekIndex >= weeklyBreakdown.length) {
+        continue;
+      }
+
+      weeklyBreakdown[weekIndex].count += 1;
+    }
+
+    const completed = workouts.length;
+    const planned = safePlannedPerWeek * totalWeeks;
+    const percentage = planned > 0 ? (completed / planned) * 100 : 0;
+
+    return {
+      completed,
+      planned,
+      percentage,
+      weeklyBreakdown,
+    };
+  });
+}
+
 export async function getRecentExerciseExposures(
   exerciseId: string,
   limit = 2
@@ -1479,18 +1557,18 @@ export async function restoreFromExportData(
         );
       }
 
-      const earliestCompletedWorkout = payload.workouts
+      const earliestStartedCompletedWorkout = payload.workouts
         .filter((workout) => workout.completedAt !== null)
         .sort((left, right) =>
-          (left.completedAt ?? '').localeCompare(right.completedAt ?? '')
+          (left.startedAt ?? '').localeCompare(right.startedAt ?? '')
         )[0];
 
-      if (earliestCompletedWorkout?.completedAt) {
+      if (earliestStartedCompletedWorkout?.startedAt) {
         await transaction.runAsync(
           `INSERT INTO app_settings (key, value)
            VALUES (?, ?)
            ON CONFLICT(key) DO UPDATE SET value = excluded.value;`,
-          [APP_SETTING_FIRST_WORKOUT_ANCHOR, earliestCompletedWorkout.completedAt]
+          [APP_SETTING_FIRST_WORKOUT_ANCHOR, earliestStartedCompletedWorkout.startedAt]
         );
       } else {
         await transaction.runAsync(
@@ -1509,5 +1587,38 @@ export async function restoreFromExportData(
 }
 
 export async function getFirstWorkoutAnchor(): Promise<string | null> {
-  return getAppSetting(APP_SETTING_FIRST_WORKOUT_ANCHOR);
+  return withDatabase('getFirstWorkoutAnchor', async (database) => {
+    const persisted = await database.getFirstAsync<AppSettingRow>(
+      'SELECT value FROM app_settings WHERE key = ?;',
+      [APP_SETTING_FIRST_WORKOUT_ANCHOR]
+    );
+
+    const inferred = await database.getFirstAsync<AnchorRow>(
+      `SELECT started_at AS anchor
+       FROM workouts
+       WHERE completed_at IS NOT NULL
+       ORDER BY started_at ASC
+       LIMIT 1;`
+    );
+
+    if (!inferred?.anchor) {
+      if (persisted?.value) {
+        await database.runAsync('DELETE FROM app_settings WHERE key = ?;', [
+          APP_SETTING_FIRST_WORKOUT_ANCHOR,
+        ]);
+      }
+      return null;
+    }
+
+    if (persisted?.value !== inferred.anchor) {
+      await database.runAsync(
+        `INSERT INTO app_settings (key, value)
+         VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value;`,
+        [APP_SETTING_FIRST_WORKOUT_ANCHOR, inferred.anchor]
+      );
+    }
+
+    return inferred.anchor;
+  });
 }
