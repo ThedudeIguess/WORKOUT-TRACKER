@@ -23,6 +23,11 @@ import {
 } from '../../db/queries';
 import { useSettingsStore } from '../../stores/settingsStore';
 import type { BodyweightEntry, ExportPayload } from '../../types';
+import {
+  formatWeight,
+  getWeightUnitLabel,
+  parsePreferredWeightInput,
+} from '../../utils/units';
 
 export default function SettingsScreen() {
   const router = useRouter();
@@ -37,6 +42,7 @@ export default function SettingsScreen() {
   const units = useSettingsStore((state) => state.units);
   const setDefaultRestSeconds = useSettingsStore((state) => state.setDefaultRestSeconds);
   const setUnits = useSettingsStore((state) => state.setUnits);
+  const weightUnitLabel = getWeightUnitLabel(units);
 
   const refreshBodyweight = useCallback(async () => {
     try {
@@ -62,15 +68,15 @@ export default function SettingsScreen() {
   );
 
   const addBodyweight = async () => {
-    const weight = Number(bodyweightInput);
-    if (!Number.isFinite(weight) || weight <= 0) {
-      Alert.alert('Invalid bodyweight', 'Enter a valid number in kg.');
+    const weightKg = parsePreferredWeightInput(bodyweightInput, units);
+    if (weightKg === null || weightKg <= 0) {
+      Alert.alert('Invalid bodyweight', `Enter a valid number in ${weightUnitLabel}.`);
       return;
     }
 
     setIsAddingBodyweight(true);
     try {
-      await logBodyweight({ weightKg: weight });
+      await logBodyweight({ weightKg });
       setBodyweightInput('');
       await refreshBodyweight();
     } catch (error) {
@@ -331,7 +337,7 @@ export default function SettingsScreen() {
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Bodyweight Log</Text>
         <Text style={styles.metaText}>
-          Latest: {latestBodyweight !== null ? `${latestBodyweight.toFixed(1)} kg` : 'No entries'}
+          Latest: {latestBodyweight !== null ? formatWeight(latestBodyweight, units) : 'No entries'}
         </Text>
 
         <View style={styles.rowButtons}>
@@ -339,7 +345,7 @@ export default function SettingsScreen() {
             value={bodyweightInput}
             onChangeText={setBodyweightInput}
             keyboardType="decimal-pad"
-            placeholder="kg"
+            placeholder={weightUnitLabel}
             placeholderTextColor={theme.colors.textMuted}
             style={[styles.input, styles.flex]}
           />
@@ -362,7 +368,7 @@ export default function SettingsScreen() {
           bodyweightEntries.map((entry) => (
             <View key={entry.id} style={styles.logRow}>
               <Text style={styles.logDate}>{new Date(entry.loggedAt).toLocaleDateString()}</Text>
-              <Text style={styles.logValue}>{entry.weightKg.toFixed(1)} kg</Text>
+              <Text style={styles.logValue}>{formatWeight(entry.weightKg, units)}</Text>
               <Text style={styles.logSource}>{entry.source}</Text>
             </View>
           ))

@@ -15,6 +15,8 @@ export type MuscleRole = 'direct' | 'indirect';
 
 export type VolumeZone = 'RED' | 'YELLOW' | 'GREEN' | 'AMBER' | 'ORANGE';
 
+export type UnitPreference = 'kg' | 'lb';
+
 export type EvidenceGrade = 'HIGH' | 'MEDIUM' | 'LOW';
 
 export interface Exercise {
@@ -100,6 +102,18 @@ export interface LoggedSet {
   isWarmup: boolean;
   loggedAt: string;
   notes: string | null;
+  updatedAt?: string | null;
+  deletedAt?: string | null;
+}
+
+export interface SetAuditLogEntry {
+  id: number;
+  setId: number;
+  workoutId: string;
+  action: 'update' | 'delete';
+  beforeJson: string;
+  afterJson: string | null;
+  changedAt: string;
 }
 
 export interface BodyweightEntry {
@@ -273,4 +287,5 @@ export interface ExportPayload {
   exercises: Exercise[];
   exercise_muscle_mappings: ExerciseMuscleMapping[];
   bodyweight_log: BodyweightEntry[];
+  set_audit_log?: SetAuditLogEntry[];
 }

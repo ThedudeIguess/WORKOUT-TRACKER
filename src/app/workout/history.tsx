@@ -43,6 +43,7 @@ export default function WorkoutHistoryScreen() {
   const [exerciseSummariesByWorkout, setExerciseSummariesByWorkout] = useState<
     Record<string, string>
   >({});
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const load = useCallback(async (showLoadingState = true) => {
     if (showLoadingState) {
@@ -50,6 +51,7 @@ export default function WorkoutHistoryScreen() {
     }
 
     try {
+      setLoadError(null);
       const history = await getWorkoutHistory(100);
       setItems(history);
 
@@ -65,6 +67,10 @@ export default function WorkoutHistoryScreen() {
         }
         setExerciseSummariesByWorkout(next);
       }
+    } catch (error) {
+      setLoadError(
+        error instanceof Error ? error.message : 'Could not load workout history.'
+      );
     } finally {
       if (showLoadingState) {
         setLoading(false);
@@ -138,6 +144,12 @@ export default function WorkoutHistoryScreen() {
           {items.length === 0 ? (
             <View style={styles.emptyCard}>
               <Text style={styles.emptyText}>No completed workouts yet.</Text>
+            </View>
+          ) : null}
+
+          {loadError ? (
+            <View style={styles.errorCard}>
+              <Text style={styles.errorText}>{loadError}</Text>
             </View>
           ) : null}
         </View>
@@ -281,6 +293,18 @@ const styles = StyleSheet.create({
   },
   emptyText: {
     color: theme.colors.textSecondary,
+  },
+  errorCard: {
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.danger,
+    backgroundColor: '#3a1b22',
+    padding: theme.spacing.md,
+  },
+  errorText: {
+    color: theme.colors.textPrimary,
+    fontWeight: '700',
+    fontSize: theme.fontSize.sm,
   },
   card: {
     borderRadius: theme.radius.md,

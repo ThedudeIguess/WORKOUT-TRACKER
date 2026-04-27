@@ -19,6 +19,12 @@ import {
 import type { ProgressionRateResult, StrengthTrendPoint } from '../../types';
 import { estimateOneRepMax } from '../../utils/oneRepMax';
 import { calculateProgressionRate } from '../../utils/progressionRate';
+import { useSettingsStore } from '../../stores/settingsStore';
+import {
+  formatWeight,
+  getWeightUnitLabel,
+  kgToPreferredUnit,
+} from '../../utils/units';
 
 interface ProgressionOverviewRow {
   exerciseId: string;
@@ -50,10 +56,20 @@ export default function StrengthTrendsScreen() {
   const [progressionOverview, setProgressionOverview] = useState<
     ProgressionOverviewRow[]
   >([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const units = useSettingsStore((state) => state.units);
+  const weightUnitLabel = getWeightUnitLabel(units);
 
   const loadSeries = useCallback(async (exerciseId: string) => {
-    const points = await getStrengthTrendSeries(exerciseId);
-    setSeries(points);
+    try {
+      setLoadError(null);
+      const points = await getStrengthTrendSeries(exerciseId);
+      setSeries(points);
+    } catch (error) {
+      setLoadError(
+        error instanceof Error ? error.message : 'Could not load strength series.'
+      );
+    }
   }, []);
 
   const load = useCallback(async (showLoadingState = true) => {
@@ -62,6 +78,7 @@ export default function StrengthTrendsScreen() {
     }
 
     try {
+      setLoadError(null);
       const [exerciseLibrary, bodyweightEntries] = await Promise.all([
         listExerciseLibrary(),
         getBodyweightLog(1),
@@ -121,6 +138,10 @@ export default function StrengthTrendsScreen() {
             return left.exerciseName.localeCompare(right.exerciseName);
           })
       );
+    } catch (error) {
+      setLoadError(
+        error instanceof Error ? error.message : 'Could not load strength trends.'
+      );
     } finally {
       if (showLoadingState) {
         setLoading(false);
@@ -147,9 +168,12 @@ export default function StrengthTrendsScreen() {
     () =>
       series.map((point) => ({
         label: new Date(point.completedAt).toLocaleDateString(),
-        value: estimateOneRepMax(point.bestSetLoadKg, point.bestSetReps),
+        value: kgToPreferredUnit(
+          estimateOneRepMax(point.bestSetLoadKg, point.bestSetReps),
+          units
+        ),
       })),
-    [series]
+    [series, units]
   );
 
   const selectedExerciseName = useMemo(
@@ -191,23 +215,25 @@ export default function StrengthTrendsScreen() {
     const lines: Array<{ label: string; value: number; color: string }> = [];
 
     if (lowercaseName.includes('bench')) {
+      const targetKg = latestBodyweight;
       lines.push({
-        label: `1.0x BW (${latestBodyweight.toFixed(1)} kg)`,
-        value: latestBodyweight,
+        label: `1.0x BW (${formatWeight(targetKg, units)})`,
+        value: kgToPreferredUnit(targetKg, units),
         color: theme.colors.info,
       });
     }
 
     if (lowercaseName.includes('squat')) {
+      const targetKg = latestBodyweight * 1.25;
       lines.push({
-        label: `1.25x BW (${(latestBodyweight * 1.25).toFixed(1)} kg)`,
-        value: latestBodyweight * 1.25,
+        label: `1.25x BW (${formatWeight(targetKg, units)})`,
+        value: kgToPreferredUnit(targetKg, units),
         color: theme.colors.warning,
       });
     }
 
     return lines;
-  }, [latestBodyweight, selectedExerciseName]);
+  }, [latestBodyweight, selectedExerciseName, units]);
 
   if (loading) {
     return (
@@ -235,6 +261,12 @@ export default function StrengthTrendsScreen() {
         <Text style={styles.heroTitle}>{selectedExerciseName}</Text>
         <Text style={styles.heroSubtitle}>Estimated 1RM by session top set.</Text>
       </View>
+
+      {loadError ? (
+        <View style={styles.errorCard}>
+          <Text style={styles.errorText}>{loadError}</Text>
+        </View>
+      ) : null}
 
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Progression Overview</Text>
@@ -301,7 +333,7 @@ export default function StrengthTrendsScreen() {
         <View style={styles.metricCardWide}>
           <Text style={styles.metricLabel}>CURRENT ESTIMATED 1RM</Text>
           <Text style={styles.metricValueHero}>
-            {latestEstimate !== null ? `${latestEstimate.toFixed(1)} kg` : '-'}
+            {latestEstimate !== null ? `${latestEstimate.toFixed(1)} ${weightUnitLabel}` : '-'}
           </Text>
         </View>
       </View>
@@ -319,7 +351,7 @@ export default function StrengthTrendsScreen() {
                   : styles.metricNegative,
             ]}
           >
-            {estimateDelta !== null ? `${estimateDelta >= 0 ? '+' : ''}${estimateDelta.toFixed(1)} kg` : '-'}
+            {estimateDelta !== null ? `${estimateDelta >= 0 ? '+' : ''}${estimateDelta.toFixed(1)} ${weightUnitLabel}` : '-'}
           </Text>
         </View>
         <View style={styles.metricCard}>
@@ -329,7 +361,7 @@ export default function StrengthTrendsScreen() {
         <View style={styles.metricCard}>
           <Text style={styles.metricLabel}>Bodyweight</Text>
           <Text style={styles.metricValue}>
-            {latestBodyweight ? `${latestBodyweight.toFixed(1)} kg` : '-'}
+            {latestBodyweight ? formatWeight(latestBodyweight, units) : '-'}
           </Text>
         </View>
       </View>
@@ -340,6 +372,7 @@ export default function StrengthTrendsScreen() {
           points={chartPoints}
           color={theme.colors.accent}
           targetLines={targetLines}
+          unitLabel={weightUnitLabel}
         />
       </View>
 
@@ -414,10 +447,13 @@ export default function StrengthTrendsScreen() {
                   {new Date(point.completedAt).toLocaleDateString()}
                 </Text>
                 <Text style={styles.pointText}>
-                  {point.bestSetLoadKg} kg x {point.bestSetReps}
+                  {formatWeight(point.bestSetLoadKg, units)} x {point.bestSetReps}
                 </Text>
                 <Text style={styles.pointEstimate}>
-                  {estimateOneRepMax(point.bestSetLoadKg, point.bestSetReps).toFixed(1)} kg
+                  {formatWeight(
+                    estimateOneRepMax(point.bestSetLoadKg, point.bestSetReps),
+                    units
+                  )}
                 </Text>
               </View>
             ))
@@ -544,6 +580,18 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.bg2,
     padding: theme.spacing.md,
     gap: theme.spacing.sm,
+  },
+  errorCard: {
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.danger,
+    backgroundColor: '#3a1b22',
+    padding: theme.spacing.md,
+  },
+  errorText: {
+    color: theme.colors.textPrimary,
+    fontSize: theme.fontSize.sm,
+    fontWeight: '700',
   },
   cardTitle: {
     color: theme.colors.textPrimary,

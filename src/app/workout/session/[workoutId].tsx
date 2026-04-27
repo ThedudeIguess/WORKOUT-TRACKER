@@ -9,7 +9,9 @@ import {
 } from 'react-native';
 import { theme } from '../../../constants/theme';
 import { getWorkoutDetail } from '../../../db/queries';
+import { useSettingsStore } from '../../../stores/settingsStore';
 import type { WorkoutDetail, WorkoutDetailSet } from '../../../types';
+import { formatWeight } from '../../../utils/units';
 
 function formatDuration(minutes: number): string {
   if (minutes < 60) {
@@ -33,6 +35,7 @@ export default function WorkoutSessionDetailScreen() {
   const [loading, setLoading] = useState(true);
   const [detail, setDetail] = useState<WorkoutDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const units = useSettingsStore((state) => state.units);
 
   useFocusEffect(
     useCallback(() => {
@@ -159,7 +162,7 @@ export default function WorkoutSessionDetailScreen() {
 
       <View style={styles.metaCard}>
         <Text style={styles.metaText}>
-          Bodyweight: {detail.bodyweightKg !== null ? `${detail.bodyweightKg.toFixed(1)} kg` : '-'}
+          Bodyweight: {detail.bodyweightKg !== null ? formatWeight(detail.bodyweightKg, units) : '-'}
         </Text>
         {detail.notes ? <Text style={styles.notesText}>Notes: {detail.notes}</Text> : null}
       </View>
@@ -174,7 +177,7 @@ export default function WorkoutSessionDetailScreen() {
                   Set {set.setOrder}{set.isWarmup ? ' (warmup)' : ''}
                 </Text>
                 <Text style={styles.setCenter}>
-                  {set.loadKg} kg x {set.reps}
+                  {formatWeight(set.loadKg, units)} x {set.reps}
                 </Text>
                 <Text style={styles.setRight}>{set.effortLabel}</Text>
               </View>

@@ -129,6 +129,27 @@ const migrations: Migration[] = [
        CHECK(input_mode IN ('reps', 'timed'));`,
     ],
   },
+  {
+    version: 3,
+    statements: [
+      `ALTER TABLE sets
+       ADD COLUMN updated_at TEXT;`,
+      `ALTER TABLE sets
+       ADD COLUMN deleted_at TEXT;`,
+      `CREATE TABLE IF NOT EXISTS set_audit_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        set_id INTEGER NOT NULL,
+        workout_id TEXT NOT NULL,
+        action TEXT NOT NULL CHECK(action IN ('update', 'delete')),
+        before_json TEXT NOT NULL,
+        after_json TEXT,
+        changed_at TEXT NOT NULL
+      );`,
+      'CREATE INDEX IF NOT EXISTS idx_sets_deleted_at ON sets(deleted_at);',
+      'CREATE INDEX IF NOT EXISTS idx_set_audit_log_set_id ON set_audit_log(set_id);',
+      'CREATE INDEX IF NOT EXISTS idx_set_audit_log_changed_at ON set_audit_log(changed_at);',
+    ],
+  },
 ];
 
 export const CURRENT_SCHEMA_VERSION = migrations[migrations.length - 1]?.version ?? 0;

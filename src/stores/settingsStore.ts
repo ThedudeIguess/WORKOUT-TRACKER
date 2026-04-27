@@ -1,7 +1,6 @@
 import { create } from 'zustand';
 import { getAppSetting, setAppSetting } from '../db/queries';
-
-type UnitPreference = 'kg' | 'lb';
+import type { UnitPreference } from '../types';
 
 interface SettingsStoreState {
   theme: 'dark';

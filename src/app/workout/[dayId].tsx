@@ -44,6 +44,12 @@ import type {
   ProgressionSuggestion,
 } from '../../types';
 import { getProgressionSuggestion } from '../../utils/progressionEngine';
+import {
+  formatWeight,
+  formatWeightForInput,
+  getWeightUnitLabel,
+  parsePreferredWeightInput,
+} from '../../utils/units';
 
 const customExerciseCategories: ExerciseCategory[] = [
   'compound',
@@ -116,6 +122,8 @@ export default function ActiveWorkoutScreen() {
   const dayNumber = Number(params.dayId || '1');
   const backdateIso = params.backdateIso ?? null;
   const defaultRestSeconds = useSettingsStore((state) => state.defaultRestSeconds);
+  const units = useSettingsStore((state) => state.units);
+  const weightUnitLabel = getWeightUnitLabel(units);
 
   const {
     expandedSlotIds,
@@ -348,11 +356,21 @@ export default function ActiveWorkoutScreen() {
       return;
     }
 
-    const suggestion = await getProgressionSuggestion(exerciseId);
-    setProgressionByExercise((current) => ({
-      ...current,
-      [exerciseId]: suggestion,
-    }));
+    try {
+      const suggestion = await getProgressionSuggestion(exerciseId);
+      setProgressionByExercise((current) => ({
+        ...current,
+        [exerciseId]: suggestion,
+      }));
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Could not load progression hint.';
+      setActionError(message);
+      setProgressionByExercise((current) => ({
+        ...current,
+        [exerciseId]: null,
+      }));
+    }
   };
 
   const showActionError = (
@@ -383,6 +401,37 @@ export default function ActiveWorkoutScreen() {
         return current.filter((entry) => entry !== muscleGroupId);
       }
       return [...current, muscleGroupId];
+    });
+  };
+
+  const attachAlternateToLoadedTemplate = (
+    slotId: number,
+    option: { id: string; name: string }
+  ) => {
+    setTemplate((currentTemplate) => {
+      if (!currentTemplate) {
+        return currentTemplate;
+      }
+
+      return {
+        ...currentTemplate,
+        slots: currentTemplate.slots.map((slot) => {
+          if (
+            slot.id !== slotId ||
+            slot.defaultExerciseId === option.id ||
+            slot.alternateExercises.some((alternate) => alternate.id === option.id)
+          ) {
+            return slot;
+          }
+
+          return {
+            ...slot,
+            alternateExercises: [...slot.alternateExercises, option].sort((left, right) =>
+              left.name.localeCompare(right.name)
+            ),
+          };
+        }),
+      };
     });
   };
 
@@ -438,6 +487,7 @@ export default function ActiveWorkoutScreen() {
       await addSlotAlternate(swapSlot.id, exerciseId);
 
       const customOption = { id: exerciseId, name: trimmedName };
+      attachAlternateToLoadedTemplate(swapSlot.id, customOption);
       setCustomExerciseOptions((current) =>
         [...current, customOption].sort((left, right) =>
           left.name.localeCompare(right.name)
@@ -471,12 +521,20 @@ export default function ActiveWorkoutScreen() {
     setSubmitting(true);
     try {
       const nowIso = new Date().toISOString();
-      const result = await createWorkoutSession({
-        dayTemplateId: template.id,
-        prsScore,
-        bodyweightKg: bodyweightInput ? Number(bodyweightInput) : null,
-        startedAtOverride: backdateIso ?? undefined,
-      });
+        const bodyweightKg = bodyweightInput.trim()
+          ? parsePreferredWeightInput(bodyweightInput, units)
+          : null;
+
+        if (bodyweightInput.trim() && bodyweightKg === null) {
+          throw new Error(`Bodyweight must be a valid ${weightUnitLabel} value.`);
+        }
+
+        const result = await createWorkoutSession({
+          dayTemplateId: template.id,
+          prsScore,
+          bodyweightKg,
+          startedAtOverride: backdateIso ?? undefined,
+        });
       setWorkoutId(result.workoutId);
       setStartedAt(backdateIso ?? nowIso);
       setElapsedStartAt(nowIso);
@@ -521,7 +579,7 @@ export default function ActiveWorkoutScreen() {
           isTimedSlot
             ? '0'
             : mostRecentLoad !== null
-              ? String(mostRecentLoad)
+              ? formatWeightForInput(mostRecentLoad, units)
               : '',
         reps: '',
         effortLabel: null,
@@ -553,12 +611,15 @@ export default function ActiveWorkoutScreen() {
 
     const reps = Number(draft.reps);
     const isTimedSlot = slot.inputMode === 'timed';
-    const loadKg = isTimedSlot ? 0 : Number(draft.loadKg);
+    const parsedLoadKg = isTimedSlot
+      ? 0
+      : parsePreferredWeightInput(draft.loadKg, units);
+    const loadKg = parsedLoadKg ?? 0;
     if (!Number.isFinite(reps) || reps <= 0) {
       return;
     }
 
-    if (!isTimedSlot && (!Number.isFinite(loadKg) || loadKg < 0)) {
+    if (!isTimedSlot && parsedLoadKg === null) {
       return;
     }
 
@@ -646,7 +707,7 @@ export default function ActiveWorkoutScreen() {
 
   const openEditSet = (setToEdit: LocalLoggedSet) => {
     setDraftSet(setToEdit.slotId, {
-      loadKg: String(setToEdit.loadKg),
+      loadKg: formatWeightForInput(setToEdit.loadKg, units),
       reps: String(setToEdit.reps),
       effortLabel: setToEdit.effortLabel,
       isWarmup: setToEdit.isWarmup,
@@ -661,7 +722,10 @@ export default function ActiveWorkoutScreen() {
   const deleteLoggedSet = (setToDelete: LocalLoggedSet) => {
     Alert.alert(
       'Delete Set',
-      `Delete Set ${setToDelete.setOrder} (${setToDelete.loadKg} kg x ${setToDelete.reps})?`,
+      `Delete Set ${setToDelete.setOrder} (${formatWeight(
+        setToDelete.loadKg,
+        units
+      )} x ${setToDelete.reps})?`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -707,6 +771,9 @@ export default function ActiveWorkoutScreen() {
       await completeWorkoutSession({
         workoutId,
         notes: notes.trim().length > 0 ? notes.trim() : null,
+        completedAt: backdateIso
+          ? new Date(new Date(backdateIso).getTime() + 60 * 60 * 1000).toISOString()
+          : undefined,
       });
       clearSessionUiState();
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -775,6 +842,55 @@ export default function ActiveWorkoutScreen() {
     });
   }, [customExerciseOptions, swapSlot]);
 
+  const selectSwapOption = async (option: { id: string; name: string }) => {
+    if (!swapSlot) {
+      return;
+    }
+
+    const currentExerciseId = selectedExerciseBySlot[swapSlot.id]?.id;
+    const hasLoggedSetsForSlot = loggedSets.some(
+      (set) => set.slotId === swapSlot.id
+    );
+
+    if (
+      hasLoggedSetsForSlot &&
+      currentExerciseId &&
+      option.id !== currentExerciseId
+    ) {
+      const message =
+        'You cannot swap this exercise after logging sets for the slot.';
+      setActionError(message);
+      Alert.alert('Swap unavailable', message);
+      setSwapSlotId(null);
+      return;
+    }
+
+    const isKnownForSlot =
+      option.id === swapSlot.defaultExerciseId ||
+      swapSlot.alternateExercises.some((alternate) => alternate.id === option.id);
+
+    try {
+      setActionError(null);
+      if (!isKnownForSlot) {
+        await addSlotAlternate(swapSlot.id, option.id);
+        attachAlternateToLoadedTemplate(swapSlot.id, option);
+      }
+
+      setSelectedExerciseBySlot((current) => ({
+        ...current,
+        [swapSlot.id]: { id: option.id, name: option.name },
+      }));
+      setSwapSlotId(null);
+      void fetchProgressionHint(option.id);
+    } catch (error) {
+      showActionError(
+        'Swap failed',
+        error,
+        'Could not save this exercise as a slot alternate.'
+      );
+    }
+  };
+
   const restRemainingRatio =
     restTimer.totalSeconds > 0
       ? restTimer.remainingSeconds / restTimer.totalSeconds
@@ -837,7 +953,9 @@ export default function ActiveWorkoutScreen() {
             <PrsInput value={prsScore} onChange={setPrsScore} />
 
             <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Bodyweight (kg, optional)</Text>
+              <Text style={styles.inputLabel}>
+                Bodyweight ({weightUnitLabel}, optional)
+              </Text>
               <TextInput
                 keyboardType="decimal-pad"
                 value={bodyweightInput}
@@ -923,7 +1041,7 @@ export default function ActiveWorkoutScreen() {
                 onOpenSwap={() => setSwapSlotId(slot.id)}
                 progressionHint={
                   progression
-                    ? `Try ${progression.suggestedLoadKg.toFixed(1)} kg next`
+                    ? `Try ${formatWeight(progression.suggestedLoadKg, units)} next`
                     : null
                 }
               >
@@ -937,7 +1055,7 @@ export default function ActiveWorkoutScreen() {
                       style={({ pressed }) => [styles.loggedSetRow, pressed && styles.pressed]}
                     >
                       <Text style={styles.loggedSetText}>
-                        Set {set.setOrder}: {isTimedSlot ? `${set.reps}s` : `${set.loadKg}kg x ${set.reps}`}{' '}
+                        Set {set.setOrder}: {isTimedSlot ? `${set.reps}s` : `${formatWeight(set.loadKg, units)} x ${set.reps}`}{' '}
                         <Text
                           style={[
                             styles.loggedSetEffort,
@@ -960,6 +1078,7 @@ export default function ActiveWorkoutScreen() {
                     value={draftSet}
                     inputMode={slot.inputMode}
                     intervalHintSeconds={slot.restSeconds}
+                    loadUnitLabel={weightUnitLabel}
                     onChange={(nextDraft) => setDraftSet(slot.id, nextDraft)}
                     onConfirm={() => {
                       void confirmSet(slot.id);
@@ -1057,30 +1176,7 @@ export default function ActiveWorkoutScreen() {
                 <Pressable
                   key={option.id}
                   onPress={() => {
-                    const currentExerciseId = selectedExerciseBySlot[swapSlot.id]?.id;
-                    const hasLoggedSetsForSlot = loggedSets.some(
-                      (set) => set.slotId === swapSlot.id
-                    );
-
-                    if (
-                      hasLoggedSetsForSlot &&
-                      currentExerciseId &&
-                      option.id !== currentExerciseId
-                    ) {
-                      const message =
-                        'You cannot swap this exercise after logging sets for the slot.';
-                      setActionError(message);
-                      Alert.alert('Swap unavailable', message);
-                      setSwapSlotId(null);
-                      return;
-                    }
-
-                    setSelectedExerciseBySlot((current) => ({
-                      ...current,
-                      [swapSlot.id]: { id: option.id, name: option.name },
-                    }));
-                    setSwapSlotId(null);
-                    void fetchProgressionHint(option.id);
+                    void selectSwapOption(option);
                   }}
                   style={({ pressed }) => [
                     styles.sheetOption,

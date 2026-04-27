@@ -18,6 +18,7 @@ interface SetRowProps {
   value: DraftSetInput;
   inputMode?: 'reps' | 'timed';
   intervalHintSeconds?: number | null;
+  loadUnitLabel?: string;
   onChange: (nextValue: DraftSetInput) => void;
   onConfirm: () => void;
 }
@@ -27,6 +28,7 @@ export function SetRow({
   value,
   inputMode = 'reps',
   intervalHintSeconds,
+  loadUnitLabel = 'kg',
   onChange,
   onConfirm,
 }: SetRowProps) {
@@ -148,7 +150,7 @@ export function SetRow({
                 placeholderTextColor={theme.colors.textMuted}
                 style={styles.metricInput}
               />
-              <Text style={styles.metricSuffix}>kg</Text>
+              <Text style={styles.metricSuffix}>{loadUnitLabel}</Text>
             </View>
           </View>
 

@@ -13,6 +13,7 @@ import {
   type LoggedSet,
   type MuscleRole,
   type ProgressionExposure,
+  type SetAuditLogEntry,
   type SetForVolume,
   type StrengthTrendPoint,
   type WorkoutDetail,
@@ -22,6 +23,7 @@ import {
 } from '../types';
 import { runMigrations, getDatabase } from './schema';
 import { seedDatabaseIfNeeded } from './seed';
+import { importTrainingHistory } from './importHistory';
 
 const APP_SETTING_FIRST_WORKOUT_ANCHOR = 'first_workout_timestamp';
 const APP_SETTING_THEME = 'theme';
@@ -168,6 +170,21 @@ interface ExportSetRow extends Omit<LoggedSet, 'isWarmup'> {
   isWarmup: number;
 }
 
+interface MutableSetRow {
+  id: number;
+  workout_id: string;
+  exercise_id: string;
+  set_order: number;
+  reps: number;
+  load_kg: number;
+  effort_label: EffortLabel;
+  is_warmup: number;
+  logged_at: string;
+  notes: string | null;
+  updated_at: string | null;
+  deleted_at: string | null;
+}
+
 interface ExportExerciseRow extends Omit<Exercise, 'isActive'> {
   isActive: number;
 }
@@ -213,10 +230,28 @@ function generateWorkoutId(): string {
   return `workout-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
 }
 
+function serializeSetSnapshot(row: MutableSetRow): string {
+  return JSON.stringify({
+    id: row.id,
+    workoutId: row.workout_id,
+    exerciseId: row.exercise_id,
+    setOrder: row.set_order,
+    reps: row.reps,
+    loadKg: row.load_kg,
+    effortLabel: row.effort_label,
+    isWarmup: row.is_warmup === 1,
+    loggedAt: row.logged_at,
+    notes: row.notes,
+    updatedAt: row.updated_at,
+    deletedAt: row.deleted_at,
+  });
+}
+
 export async function initializeDatabase(): Promise<void> {
   await withDatabase('initializeDatabase', async () => {
     await runMigrations();
     await seedDatabaseIfNeeded();
+    await importTrainingHistory();
 
     const defaults: Array<[string, string]> = [
       [APP_SETTING_THEME, 'dark'],
@@ -417,9 +452,12 @@ export async function getWorkoutSets(workoutId: string): Promise<LoggedSet[]> {
         effort_label AS effortLabel,
         is_warmup AS isWarmup,
         logged_at AS loggedAt,
-        notes
+        notes,
+        updated_at AS updatedAt,
+        deleted_at AS deletedAt
       FROM sets
       WHERE workout_id = ?
+        AND deleted_at IS NULL
       ORDER BY logged_at ASC, set_order ASC;`,
       [workoutId]
     );
@@ -433,7 +471,51 @@ export async function getWorkoutSets(workoutId: string): Promise<LoggedSet[]> {
 
 export async function deleteSet(setId: number): Promise<void> {
   await withDatabase('deleteSet', async (database) => {
-    await database.runAsync('DELETE FROM sets WHERE id = ?;', [setId]);
+    const changedAt = new Date().toISOString();
+    await database.withExclusiveTransactionAsync(async (transaction) => {
+      const before = await transaction.getFirstAsync<MutableSetRow>(
+        `SELECT id, workout_id, exercise_id, set_order, reps, load_kg, effort_label,
+          is_warmup, logged_at, notes, updated_at, deleted_at
+         FROM sets
+         WHERE id = ? AND deleted_at IS NULL;`,
+        [setId]
+      );
+
+      if (!before) {
+        return;
+      }
+
+      await transaction.runAsync(
+        `UPDATE sets
+         SET deleted_at = ?, updated_at = ?
+         WHERE id = ?;`,
+        [changedAt, changedAt, setId]
+      );
+
+      const after = {
+        ...before,
+        updated_at: changedAt,
+        deleted_at: changedAt,
+      };
+
+      await transaction.runAsync(
+        `INSERT INTO set_audit_log (
+          set_id,
+          workout_id,
+          action,
+          before_json,
+          after_json,
+          changed_at
+        ) VALUES (?, ?, 'delete', ?, ?, ?);`,
+        [
+          before.id,
+          before.workout_id,
+          serializeSetSnapshot(before),
+          serializeSetSnapshot(after),
+          changedAt,
+        ]
+      );
+    });
   });
 }
 
@@ -446,19 +528,66 @@ export async function updateSet(input: {
   notes: string | null;
 }): Promise<void> {
   await withDatabase('updateSet', async (database) => {
-    await database.runAsync(
-      `UPDATE sets
-       SET reps = ?, load_kg = ?, effort_label = ?, is_warmup = ?, notes = ?
-       WHERE id = ?;`,
-      [
-        input.reps,
-        input.loadKg,
-        input.effortLabel,
-        input.isWarmup ? 1 : 0,
-        input.notes,
-        input.setId,
-      ]
-    );
+    const changedAt = new Date().toISOString();
+    await database.withExclusiveTransactionAsync(async (transaction) => {
+      const before = await transaction.getFirstAsync<MutableSetRow>(
+        `SELECT id, workout_id, exercise_id, set_order, reps, load_kg, effort_label,
+          is_warmup, logged_at, notes, updated_at, deleted_at
+         FROM sets
+         WHERE id = ? AND deleted_at IS NULL;`,
+        [input.setId]
+      );
+
+      if (!before) {
+        return;
+      }
+
+      await transaction.runAsync(
+        `UPDATE sets
+         SET reps = ?,
+             load_kg = ?,
+             effort_label = ?,
+             is_warmup = ?,
+             notes = ?,
+             updated_at = ?
+         WHERE id = ?;`,
+        [
+          input.reps,
+          input.loadKg,
+          input.effortLabel,
+          input.isWarmup ? 1 : 0,
+          input.notes,
+          changedAt,
+          input.setId,
+        ]
+      );
+
+      const after = await transaction.getFirstAsync<MutableSetRow>(
+        `SELECT id, workout_id, exercise_id, set_order, reps, load_kg, effort_label,
+          is_warmup, logged_at, notes, updated_at, deleted_at
+         FROM sets
+         WHERE id = ?;`,
+        [input.setId]
+      );
+
+      await transaction.runAsync(
+        `INSERT INTO set_audit_log (
+          set_id,
+          workout_id,
+          action,
+          before_json,
+          after_json,
+          changed_at
+        ) VALUES (?, ?, 'update', ?, ?, ?);`,
+        [
+          before.id,
+          before.workout_id,
+          serializeSetSnapshot(before),
+          after ? serializeSetSnapshot(after) : null,
+          changedAt,
+        ]
+      );
+    });
   });
 }
 
@@ -486,6 +615,7 @@ export async function getSetsByDateRange(
       LEFT JOIN exercise_muscle_mappings emm ON emm.exercise_id = s.exercise_id
       WHERE s.logged_at >= ?
         AND s.logged_at < ?
+        AND s.deleted_at IS NULL
         AND w.completed_at IS NOT NULL
       ORDER BY s.logged_at ASC, s.id ASC;`,
       [startIso, endIso]
@@ -528,7 +658,9 @@ export async function getMostRecentLoad(
     const row = await database.getFirstAsync<{ load_kg: number }>(
       `SELECT load_kg
        FROM sets
-       WHERE exercise_id = ? AND is_warmup = 0
+       WHERE exercise_id = ?
+         AND is_warmup = 0
+         AND deleted_at IS NULL
        ORDER BY logged_at DESC
        LIMIT 1;`,
       [exerciseId]
@@ -801,7 +933,7 @@ export async function getWorkoutHistory(
         COALESCE(COUNT(s.id), 0) AS total_sets
       FROM workouts w
       JOIN day_templates dt ON dt.id = w.day_template_id
-      LEFT JOIN sets s ON s.workout_id = w.id
+      LEFT JOIN sets s ON s.workout_id = w.id AND s.deleted_at IS NULL
       WHERE w.completed_at IS NOT NULL
       GROUP BY w.id
       ORDER BY w.completed_at DESC
@@ -841,6 +973,7 @@ export async function getWorkoutExerciseSummaries(
       JOIN exercises e ON e.id = s.exercise_id
       WHERE s.workout_id IN (${placeholders})
         AND s.is_warmup = 0
+        AND s.deleted_at IS NULL
       GROUP BY s.workout_id, s.exercise_id
       ORDER BY s.workout_id, MIN(s.logged_at) ASC;`,
       workoutIds
@@ -851,7 +984,7 @@ export async function getWorkoutExerciseSummaries(
       if (!result[row.workout_id]) {
         result[row.workout_id] = [];
       }
-      result[row.workout_id].push(`${row.exercise_name} ${row.top_load}kg`);
+      result[row.workout_id].push(row.exercise_name);
     }
     return result;
   });
@@ -899,6 +1032,7 @@ export async function getWorkoutDetail(
       FROM sets s
       LEFT JOIN exercises e ON e.id = s.exercise_id
       WHERE s.workout_id = ?
+        AND s.deleted_at IS NULL
       ORDER BY s.logged_at ASC, s.id ASC, s.set_order ASC;`,
       [workoutId]
     );
@@ -951,14 +1085,23 @@ export async function getWeekStats(
   return withDatabase('getWeekStats', async (database) => {
     const row = await database.getFirstAsync<WeekStatsRow>(
       `SELECT
-        COALESCE(COUNT(DISTINCT w.id), 0) AS workouts_this_week,
-        COALESCE(COUNT(s.id), 0) AS sets_this_week
-      FROM workouts w
-      LEFT JOIN sets s ON s.workout_id = w.id
-      WHERE w.completed_at IS NOT NULL
-        AND w.completed_at >= ?
-        AND w.completed_at < ?;`,
-      [startIso, endIso]
+        (
+          SELECT COALESCE(COUNT(DISTINCT w.id), 0)
+          FROM workouts w
+          WHERE w.completed_at IS NOT NULL
+            AND w.started_at >= ?
+            AND w.started_at < ?
+        ) AS workouts_this_week,
+        (
+          SELECT COALESCE(COUNT(s.id), 0)
+          FROM sets s
+          JOIN workouts w ON w.id = s.workout_id
+          WHERE w.completed_at IS NOT NULL
+            AND s.deleted_at IS NULL
+            AND s.logged_at >= ?
+            AND s.logged_at < ?
+        ) AS sets_this_week;`,
+      [startIso, endIso, startIso, endIso]
     );
 
     return {
@@ -1051,6 +1194,7 @@ export async function getRecentExerciseExposures(
       FROM workouts w
       JOIN sets s ON s.workout_id = w.id
       WHERE s.exercise_id = ?
+        AND s.deleted_at IS NULL
         AND w.completed_at IS NOT NULL
       ORDER BY w.completed_at DESC
       LIMIT ?;`,
@@ -1083,6 +1227,7 @@ export async function getRecentExerciseExposures(
          WHERE workout_id = ?
            AND exercise_id = ?
            AND is_warmup = 0
+           AND deleted_at IS NULL
          ORDER BY set_order ASC;`,
         [workout.workout_id, exerciseId]
       );
@@ -1265,6 +1410,7 @@ export async function getStrengthTrendSeries(
       WHERE s.exercise_id = ?
         AND w.completed_at IS NOT NULL
         AND s.is_warmup = 0
+        AND s.deleted_at IS NULL
       ORDER BY w.completed_at ASC, s.load_kg DESC, s.reps DESC;`,
       [exerciseId]
     );
@@ -1372,9 +1518,24 @@ export async function exportAllData(): Promise<ExportPayload> {
         effort_label AS effortLabel,
         is_warmup AS isWarmup,
         logged_at AS loggedAt,
-        notes
+        notes,
+        updated_at AS updatedAt,
+        deleted_at AS deletedAt
       FROM sets
       ORDER BY logged_at ASC;`
+    );
+
+    const setAuditLog = await database.getAllAsync<SetAuditLogEntry>(
+      `SELECT
+        id,
+        set_id AS setId,
+        workout_id AS workoutId,
+        action,
+        before_json AS beforeJson,
+        after_json AS afterJson,
+        changed_at AS changedAt
+      FROM set_audit_log
+      ORDER BY changed_at ASC, id ASC;`
     );
 
     const exercises = await database.getAllAsync<ExportExerciseRow>(
@@ -1412,8 +1573,134 @@ export async function exportAllData(): Promise<ExportPayload> {
       })),
       exercise_muscle_mappings: mappings,
       bodyweight_log: bodyweightLog,
+      set_audit_log: setAuditLog,
     };
   });
+}
+
+const importEffortLabels = new Set<EffortLabel>([
+  'easy',
+  'productive',
+  'hard',
+  'failure',
+]);
+const importExerciseCategories = new Set<Exercise['category']>([
+  'compound',
+  'isolation',
+  'metcon',
+  'mobility',
+]);
+const importMuscleRoles = new Set<MuscleRole>(['direct', 'indirect']);
+
+function isImportRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function assertImportRows(
+  value: unknown,
+  fieldName: string
+): Record<string, unknown>[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`Import payload is missing ${fieldName}.`);
+  }
+
+  return value.map((row, index) => {
+    if (!isImportRecord(row)) {
+      throw new Error(`Import ${fieldName}[${index}] must be an object.`);
+    }
+    return row;
+  });
+}
+
+function assertImportString(
+  row: Record<string, unknown>,
+  fieldName: string,
+  context: string
+): void {
+  if (typeof row[fieldName] !== 'string' || row[fieldName].length === 0) {
+    throw new Error(`Import ${context}.${fieldName} must be a non-empty string.`);
+  }
+}
+
+function assertImportOptionalString(
+  row: Record<string, unknown>,
+  fieldName: string,
+  context: string
+): void {
+  const value = row[fieldName];
+  if (value !== undefined && value !== null && typeof value !== 'string') {
+    throw new Error(`Import ${context}.${fieldName} must be a string or null.`);
+  }
+}
+
+function assertImportNumber(
+  row: Record<string, unknown>,
+  fieldName: string,
+  context: string
+): void {
+  const value = row[fieldName];
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error(`Import ${context}.${fieldName} must be a finite number.`);
+  }
+}
+
+function assertImportOptionalNumber(
+  row: Record<string, unknown>,
+  fieldName: string,
+  context: string
+): void {
+  const value = row[fieldName];
+  if (
+    value !== undefined &&
+    value !== null &&
+    (typeof value !== 'number' || !Number.isFinite(value))
+  ) {
+    throw new Error(`Import ${context}.${fieldName} must be a finite number or null.`);
+  }
+}
+
+function assertImportBoolean(
+  row: Record<string, unknown>,
+  fieldName: string,
+  context: string
+): void {
+  if (typeof row[fieldName] !== 'boolean') {
+    throw new Error(`Import ${context}.${fieldName} must be a boolean.`);
+  }
+}
+
+function assertImportEnum<T extends string>(
+  row: Record<string, unknown>,
+  fieldName: string,
+  context: string,
+  allowedValues: Set<T>
+): void {
+  const value = row[fieldName];
+  if (typeof value !== 'string' || !allowedValues.has(value as T)) {
+    throw new Error(`Import ${context}.${fieldName} has an unsupported value.`);
+  }
+}
+
+function assertImportJsonString(
+  row: Record<string, unknown>,
+  fieldName: string,
+  context: string,
+  required: boolean
+): void {
+  const value = row[fieldName];
+  if (!required && (value === undefined || value === null)) {
+    return;
+  }
+
+  if (typeof value !== 'string') {
+    throw new Error(`Import ${context}.${fieldName} must be a JSON string.`);
+  }
+
+  try {
+    JSON.parse(value);
+  } catch {
+    throw new Error(`Import ${context}.${fieldName} contains invalid JSON.`);
+  }
 }
 
 function assertImportPayloadShape(payload: ExportPayload): void {
@@ -1436,6 +1723,90 @@ function assertImportPayloadShape(payload: ExportPayload): void {
   if (!Array.isArray(payload.bodyweight_log)) {
     throw new Error('Import payload is missing bodyweight_log.');
   }
+
+  if (
+    payload.set_audit_log !== undefined &&
+    !Array.isArray(payload.set_audit_log)
+  ) {
+    throw new Error('Import payload set_audit_log must be an array when provided.');
+  }
+
+  assertImportRows(payload.workouts, 'workouts').forEach((row, index) => {
+    const context = `workouts[${index}]`;
+    assertImportString(row, 'id', context);
+    assertImportString(row, 'startedAt', context);
+    assertImportOptionalString(row, 'phaseId', context);
+    assertImportOptionalNumber(row, 'dayTemplateId', context);
+    assertImportOptionalString(row, 'completedAt', context);
+    assertImportOptionalNumber(row, 'prsScore', context);
+    assertImportOptionalNumber(row, 'bodyweightKg', context);
+    assertImportOptionalString(row, 'notes', context);
+  });
+
+  assertImportRows(payload.sets, 'sets').forEach((row, index) => {
+    const context = `sets[${index}]`;
+    assertImportNumber(row, 'id', context);
+    assertImportString(row, 'workoutId', context);
+    assertImportString(row, 'exerciseId', context);
+    assertImportNumber(row, 'setOrder', context);
+    assertImportNumber(row, 'reps', context);
+    assertImportNumber(row, 'loadKg', context);
+    assertImportEnum(row, 'effortLabel', context, importEffortLabels);
+    assertImportBoolean(row, 'isWarmup', context);
+    assertImportString(row, 'loggedAt', context);
+    assertImportOptionalString(row, 'notes', context);
+    assertImportOptionalString(row, 'updatedAt', context);
+    assertImportOptionalString(row, 'deletedAt', context);
+  });
+
+  assertImportRows(payload.exercises, 'exercises').forEach((row, index) => {
+    const context = `exercises[${index}]`;
+    assertImportString(row, 'id', context);
+    assertImportString(row, 'name', context);
+    assertImportEnum(row, 'category', context, importExerciseCategories);
+    assertImportOptionalString(row, 'equipment', context);
+    assertImportBoolean(row, 'isActive', context);
+  });
+
+  assertImportRows(payload.exercise_muscle_mappings, 'exercise_muscle_mappings')
+    .forEach((row, index) => {
+      const context = `exercise_muscle_mappings[${index}]`;
+      assertImportString(row, 'exerciseId', context);
+      assertImportString(row, 'muscleGroup', context);
+      assertImportEnum(row, 'role', context, importMuscleRoles);
+    });
+
+  assertImportRows(payload.bodyweight_log, 'bodyweight_log').forEach((row, index) => {
+    const context = `bodyweight_log[${index}]`;
+    assertImportNumber(row, 'id', context);
+    assertImportOptionalString(row, 'workoutId', context);
+    assertImportNumber(row, 'weightKg', context);
+    assertImportString(row, 'loggedAt', context);
+    assertImportEnum(
+      row,
+      'source',
+      context,
+      new Set<BodyweightEntry['source']>(['workout', 'manual'])
+    );
+  });
+
+  if (payload.set_audit_log) {
+    assertImportRows(payload.set_audit_log, 'set_audit_log').forEach((row, index) => {
+      const context = `set_audit_log[${index}]`;
+      assertImportNumber(row, 'id', context);
+      assertImportNumber(row, 'setId', context);
+      assertImportString(row, 'workoutId', context);
+      assertImportEnum(
+        row,
+        'action',
+        context,
+        new Set<SetAuditLogEntry['action']>(['update', 'delete'])
+      );
+      assertImportJsonString(row, 'beforeJson', context, true);
+      assertImportJsonString(row, 'afterJson', context, false);
+      assertImportString(row, 'changedAt', context);
+    });
+  }
 }
 
 export async function restoreFromExportData(
@@ -1445,6 +1816,7 @@ export async function restoreFromExportData(
 
   return withDatabase('restoreFromExportData', async (database) => {
     await database.withExclusiveTransactionAsync(async (transaction) => {
+      await transaction.runAsync('DELETE FROM set_audit_log;');
       await transaction.runAsync('DELETE FROM sets;');
       await transaction.runAsync('DELETE FROM bodyweight_log;');
       await transaction.runAsync('DELETE FROM workouts;');
@@ -1468,20 +1840,18 @@ export async function restoreFromExportData(
         );
       }
 
-      if (payload.exercise_muscle_mappings.length > 0) {
-        await transaction.runAsync('DELETE FROM exercise_muscle_mappings;');
-        for (const mapping of payload.exercise_muscle_mappings) {
-          await transaction.runAsync(
-            `INSERT INTO exercise_muscle_mappings (exercise_id, muscle_group, role)
-             VALUES (?, ?, ?)
-             ON CONFLICT(exercise_id, muscle_group) DO UPDATE SET role = excluded.role;`,
-            [mapping.exerciseId, mapping.muscleGroup, mapping.role]
-          );
-        }
+      await transaction.runAsync('DELETE FROM exercise_muscle_mappings;');
+      for (const mapping of payload.exercise_muscle_mappings) {
+        await transaction.runAsync(
+          `INSERT INTO exercise_muscle_mappings (exercise_id, muscle_group, role)
+           VALUES (?, ?, ?)
+           ON CONFLICT(exercise_id, muscle_group) DO UPDATE SET role = excluded.role;`,
+          [mapping.exerciseId, mapping.muscleGroup, mapping.role]
+        );
       }
 
       await transaction.runAsync(
-        "DELETE FROM sqlite_sequence WHERE name IN ('sets', 'bodyweight_log');"
+        "DELETE FROM sqlite_sequence WHERE name IN ('sets', 'bodyweight_log', 'set_audit_log');"
       );
 
       for (const workout of payload.workouts) {
@@ -1521,8 +1891,10 @@ export async function restoreFromExportData(
             effort_label,
             is_warmup,
             logged_at,
-            notes
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+            notes,
+            updated_at,
+            deleted_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
           [
             setRow.id,
             setRow.workoutId,
@@ -1534,6 +1906,31 @@ export async function restoreFromExportData(
             setRow.isWarmup ? 1 : 0,
             setRow.loggedAt,
             setRow.notes,
+            setRow.updatedAt ?? null,
+            setRow.deletedAt ?? null,
+          ]
+        );
+      }
+
+      for (const auditRow of payload.set_audit_log ?? []) {
+        await transaction.runAsync(
+          `INSERT INTO set_audit_log (
+            id,
+            set_id,
+            workout_id,
+            action,
+            before_json,
+            after_json,
+            changed_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?);`,
+          [
+            auditRow.id,
+            auditRow.setId,
+            auditRow.workoutId,
+            auditRow.action,
+            auditRow.beforeJson,
+            auditRow.afterJson,
+            auditRow.changedAt,
           ]
         );
       }
