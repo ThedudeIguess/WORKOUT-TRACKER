@@ -1,14 +1,18 @@
-type QueriesModule = typeof import('../src/db/queries.web');
+jest.mock('expo-sqlite');
+
+type QueriesModule = typeof import('../src/db/queries.native');
 
 async function loadQueries(): Promise<QueriesModule> {
   jest.resetModules();
+  // Re-mock after resetModules so the cached mock module is regenerated.
+  jest.doMock('expo-sqlite');
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const queries = require('../src/db/queries.web') as QueriesModule;
+  const queries = require('../src/db/queries.native') as QueriesModule;
   await queries.initializeDatabase();
   return queries;
 }
 
-describe('db integration', () => {
+describe('db integration (native)', () => {
   it('creates and reads completed workout details', async () => {
     const queries = await loadQueries();
     const dayTemplate = await queries.getDayTemplateByDayNumber(1);
@@ -45,9 +49,10 @@ describe('db integration', () => {
     });
 
     const history = await queries.getWorkoutHistory(10);
-    expect(history.length).toBe(1);
-    expect(history[0]?.workoutId).toBe(workoutId);
-    expect(history[0]?.totalSets).toBe(2);
+    expect(history.length).toBeGreaterThan(0);
+    const matching = history.find((entry) => entry.workoutId === workoutId);
+    expect(matching).toBeDefined();
+    expect(matching?.totalSets).toBe(2);
 
     const detail = await queries.getWorkoutDetail(workoutId);
     expect(detail).not.toBeNull();
@@ -177,57 +182,97 @@ describe('db integration', () => {
     const queries = await loadQueries();
     const dayTemplate = await queries.getDayTemplateByDayNumber(1);
 
-    const firstStartedAt = '2026-01-10T10:00:00.000Z';
-    const firstCompletedAt = '2026-01-10T11:00:00.000Z';
-    const secondStartedAt = '2026-01-05T09:00:00.000Z';
-    const secondCompletedAt = '2026-01-12T09:00:00.000Z';
+    // Historical import seeds workouts starting from 2025-12-25.
+    const importedAnchor = await queries.getFirstWorkoutAnchor();
+    expect(importedAnchor).toBe('2025-12-25T10:00:00.000Z');
 
-    const firstWorkout = await queries.createWorkoutSession({
+    // Adding a newer workout should not change the anchor.
+    const newerStartedAt = '2026-04-01T10:00:00.000Z';
+    const newerCompletedAt = '2026-04-01T11:00:00.000Z';
+    const newer = await queries.createWorkoutSession({
       dayTemplateId: dayTemplate.id,
       prsScore: 7,
       bodyweightKg: null,
-      startedAtOverride: firstStartedAt,
+      startedAtOverride: newerStartedAt,
     });
     await queries.logSet({
-      workoutId: firstWorkout.workoutId,
+      workoutId: newer.workoutId,
       exerciseId: dayTemplate.slots[0]?.defaultExerciseId ?? 'broad-jumps',
       reps: 5,
       loadKg: 0,
       effortLabel: 'hard',
       isWarmup: false,
       notes: null,
-      loggedAtOverride: firstStartedAt,
+      loggedAtOverride: newerStartedAt,
     });
     await queries.completeWorkoutSession({
-      workoutId: firstWorkout.workoutId,
+      workoutId: newer.workoutId,
       notes: null,
-      completedAt: firstCompletedAt,
+      completedAt: newerCompletedAt,
     });
 
-    expect(await queries.getFirstWorkoutAnchor()).toBe(firstStartedAt);
+    expect(await queries.getFirstWorkoutAnchor()).toBe(importedAnchor);
 
-    const secondWorkout = await queries.createWorkoutSession({
+    // Adding an older workout should move the anchor backward.
+    const olderStartedAt = '2025-10-01T09:00:00.000Z';
+    const olderCompletedAt = '2025-10-01T10:00:00.000Z';
+    const older = await queries.createWorkoutSession({
       dayTemplateId: dayTemplate.id,
       prsScore: 8,
       bodyweightKg: null,
-      startedAtOverride: secondStartedAt,
+      startedAtOverride: olderStartedAt,
     });
     await queries.logSet({
-      workoutId: secondWorkout.workoutId,
+      workoutId: older.workoutId,
       exerciseId: dayTemplate.slots[1]?.defaultExerciseId ?? 'barbell-back-squat',
       reps: 8,
       loadKg: 100,
       effortLabel: 'productive',
       isWarmup: false,
       notes: null,
-      loggedAtOverride: secondStartedAt,
+      loggedAtOverride: olderStartedAt,
     });
     await queries.completeWorkoutSession({
-      workoutId: secondWorkout.workoutId,
+      workoutId: older.workoutId,
       notes: null,
-      completedAt: secondCompletedAt,
+      completedAt: olderCompletedAt,
     });
 
-    expect(await queries.getFirstWorkoutAnchor()).toBe(secondStartedAt);
+    expect(await queries.getFirstWorkoutAnchor()).toBe(olderStartedAt);
+  });
+
+  describe('active phase', () => {
+    it('defaults to phase 1 when unset', async () => {
+      const queries = await loadQueries();
+      expect(await queries.getActivePhaseId()).toBe('hybrid-bb-2-phase-1');
+    });
+
+    it('switches the day templates returned by listProgramDayTemplates', async () => {
+      const queries = await loadQueries();
+
+      const phase1Days = await queries.listProgramDayTemplates();
+      expect(phase1Days.length).toBe(6);
+      expect(phase1Days[0]?.dayName).toBe('Lower Body 1');
+
+      await queries.setActivePhaseId('hybrid-bb-2-phase-3');
+      expect(await queries.getActivePhaseId()).toBe('hybrid-bb-2-phase-3');
+
+      const phase3Days = await queries.listProgramDayTemplates();
+      expect(phase3Days.length).toBe(6);
+      expect(phase3Days[0]?.dayName).toBe('Power Legs');
+      expect(phase3Days[1]?.dayName).toBe('Power Push');
+    });
+
+    it('getDayTemplateByDayNumber follows the active phase', async () => {
+      const queries = await loadQueries();
+
+      const phase1Day1 = await queries.getDayTemplateByDayNumber(1);
+      expect(phase1Day1.dayName).toBe('Lower Body 1');
+      expect(phase1Day1.phaseId).toBe('hybrid-bb-2-phase-1');
+
+      await queries.setActivePhaseId('hybrid-bb-2-phase-2');
+      const phase2Day1 = await queries.getDayTemplateByDayNumber(1);
+      expect(phase2Day1.phaseId).toBe('hybrid-bb-2-phase-2');
+    });
   });
 });

@@ -1,14 +1,13 @@
 import { exercises, exerciseMuscleMappings } from '../constants/exercises';
 import {
-  HYBRID_PHASE_1_ID,
   HYBRID_PROGRAM_ID,
-  phaseOneProgramDays,
+  seedProgramPhases,
 } from '../constants/programTemplates';
 import { muscleGroups } from '../constants/mevThresholds';
 import { getDatabase } from './schema';
 
 const SEED_VERSION_KEY = 'seed_version';
-const SEED_VERSION = '3';
+const SEED_VERSION = '4';
 
 interface DayTemplateRow {
   id: number;
@@ -66,7 +65,11 @@ export async function seedDatabaseIfNeeded(): Promise<void> {
       await transaction.runAsync(
         `INSERT INTO exercises (id, name, category, equipment, is_active)
          VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO NOTHING;`,
+         ON CONFLICT(id) DO UPDATE SET
+           name = excluded.name,
+           category = excluded.category,
+           equipment = excluded.equipment,
+           is_active = excluded.is_active;`,
         [
           exercise.id,
           exercise.name,
@@ -93,89 +96,95 @@ export async function seedDatabaseIfNeeded(): Promise<void> {
       [HYBRID_PROGRAM_ID, 'Hybrid Bodybuilding 2.0']
     );
 
-    await transaction.runAsync(
-      `INSERT INTO program_phases (id, program_id, name, phase_order, is_active)
-       VALUES (?, ?, 'Phase 1', 1, 1)
-       ON CONFLICT(id) DO UPDATE SET
-         program_id = excluded.program_id,
-         name = excluded.name,
-         phase_order = excluded.phase_order,
-         is_active = excluded.is_active;`,
-      [HYBRID_PHASE_1_ID, HYBRID_PROGRAM_ID]
-    );
-
-    for (const day of phaseOneProgramDays) {
+    for (const phase of seedProgramPhases) {
       await transaction.runAsync(
-        `INSERT INTO day_templates (phase_id, day_number, day_name)
-         VALUES (?, ?, ?)
-         ON CONFLICT(phase_id, day_number) DO UPDATE SET day_name = excluded.day_name;`,
-        [HYBRID_PHASE_1_ID, day.dayNumber, day.dayName]
+        `INSERT INTO program_phases (id, program_id, name, phase_order, is_active)
+         VALUES (?, ?, ?, ?, 1)
+         ON CONFLICT(id) DO UPDATE SET
+           program_id = excluded.program_id,
+           name = excluded.name,
+           phase_order = excluded.phase_order,
+           is_active = excluded.is_active;`,
+        [phase.id, HYBRID_PROGRAM_ID, phase.name, phase.phaseOrder]
       );
 
-      const dayTemplateRow = await transaction.getFirstAsync<DayTemplateRow>(
-        `SELECT id FROM day_templates WHERE phase_id = ? AND day_number = ?;`,
-        [HYBRID_PHASE_1_ID, day.dayNumber]
-      );
-
-      if (!dayTemplateRow) {
-        throw new Error(`Could not resolve day template id for day ${day.dayNumber}`);
-      }
-
-      for (const slot of day.slots) {
+      for (const day of phase.days) {
         await transaction.runAsync(
-          `INSERT INTO template_exercise_slots (
-            day_template_id,
-            slot_order,
-            default_exercise_id,
-            input_mode,
-            target_sets,
-            target_rep_low,
-            target_rep_high,
-            rest_seconds,
-            notes
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(day_template_id, slot_order) DO UPDATE SET
-            default_exercise_id = excluded.default_exercise_id,
-            input_mode = excluded.input_mode,
-            target_sets = excluded.target_sets,
-            target_rep_low = excluded.target_rep_low,
-            target_rep_high = excluded.target_rep_high,
-            rest_seconds = excluded.rest_seconds,
-            notes = excluded.notes;`,
-          [
-            dayTemplateRow.id,
-            slot.slotOrder,
-            slot.defaultExerciseId,
-            slot.inputMode ?? 'reps',
-            slot.targetSets,
-            slot.targetRepLow,
-            slot.targetRepHigh,
-            slot.restSeconds,
-            slot.notes ?? null,
-          ]
+          `INSERT INTO day_templates (phase_id, day_number, day_name)
+           VALUES (?, ?, ?)
+           ON CONFLICT(phase_id, day_number) DO UPDATE SET day_name = excluded.day_name;`,
+          [phase.id, day.dayNumber, day.dayName]
         );
 
-        const slotRow = await transaction.getFirstAsync<SlotRow>(
-          `SELECT id FROM template_exercise_slots
-           WHERE day_template_id = ? AND slot_order = ?;`,
-          [dayTemplateRow.id, slot.slotOrder]
+        const dayTemplateRow = await transaction.getFirstAsync<DayTemplateRow>(
+          `SELECT id FROM day_templates WHERE phase_id = ? AND day_number = ?;`,
+          [phase.id, day.dayNumber]
         );
 
-        if (!slotRow) {
-          throw new Error(`Could not resolve slot id for day ${day.dayNumber}, slot ${slot.slotOrder}`);
+        if (!dayTemplateRow) {
+          throw new Error(
+            `Could not resolve day template id for ${phase.id} day ${day.dayNumber}`
+          );
         }
 
-        await transaction.runAsync(
-          'DELETE FROM slot_alternate_exercises WHERE slot_id = ?;',
-          [slotRow.id]
-        );
-
-        for (const alternateExerciseId of slot.alternateExerciseIds ?? []) {
+        for (const slot of day.slots) {
           await transaction.runAsync(
-            `INSERT OR IGNORE INTO slot_alternate_exercises (slot_id, exercise_id)
-             VALUES (?, ?);`,
-            [slotRow.id, alternateExerciseId]
+            `INSERT INTO template_exercise_slots (
+              day_template_id,
+              slot_order,
+              default_exercise_id,
+              input_mode,
+              target_sets,
+              target_rep_low,
+              target_rep_high,
+              rest_seconds,
+              notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(day_template_id, slot_order) DO UPDATE SET
+              default_exercise_id = excluded.default_exercise_id,
+              input_mode = excluded.input_mode,
+              target_sets = excluded.target_sets,
+              target_rep_low = excluded.target_rep_low,
+              target_rep_high = excluded.target_rep_high,
+              rest_seconds = excluded.rest_seconds,
+              notes = excluded.notes;`,
+            [
+              dayTemplateRow.id,
+              slot.slotOrder,
+              slot.defaultExerciseId,
+              slot.inputMode ?? 'reps',
+              slot.targetSets,
+              slot.targetRepLow,
+              slot.targetRepHigh,
+              slot.restSeconds,
+              slot.notes ?? null,
+            ]
           );
+
+          const slotRow = await transaction.getFirstAsync<SlotRow>(
+            `SELECT id FROM template_exercise_slots
+             WHERE day_template_id = ? AND slot_order = ?;`,
+            [dayTemplateRow.id, slot.slotOrder]
+          );
+
+          if (!slotRow) {
+            throw new Error(
+              `Could not resolve slot id for ${phase.id} day ${day.dayNumber}, slot ${slot.slotOrder}`
+            );
+          }
+
+          await transaction.runAsync(
+            'DELETE FROM slot_alternate_exercises WHERE slot_id = ?;',
+            [slotRow.id]
+          );
+
+          for (const alternateExerciseId of slot.alternateExerciseIds ?? []) {
+            await transaction.runAsync(
+              `INSERT OR IGNORE INTO slot_alternate_exercises (slot_id, exercise_id)
+               VALUES (?, ?);`,
+              [slotRow.id, alternateExerciseId]
+            );
+          }
         }
       }
     }

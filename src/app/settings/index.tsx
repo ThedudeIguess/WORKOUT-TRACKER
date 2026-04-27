@@ -14,12 +14,15 @@ import {
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
+import { seedProgramPhases } from '../../constants/programTemplates';
 import { theme } from '../../constants/theme';
 import {
   exportAllData,
+  getActivePhaseId,
   getBodyweightLog,
   logBodyweight,
   restoreFromExportData,
+  setActivePhaseId,
 } from '../../db/queries';
 import { useSettingsStore } from '../../stores/settingsStore';
 import type { BodyweightEntry, ExportPayload } from '../../types';
@@ -37,6 +40,9 @@ export default function SettingsScreen() {
   const [isImporting, setIsImporting] = useState(false);
   const [isAddingBodyweight, setIsAddingBodyweight] = useState(false);
   const [isSavingPreferences, setIsSavingPreferences] = useState(false);
+  const [activePhaseId, setActivePhaseIdState] = useState<string>(
+    seedProgramPhases[0]?.id ?? ''
+  );
 
   const defaultRestSeconds = useSettingsStore((state) => state.defaultRestSeconds);
   const units = useSettingsStore((state) => state.units);
@@ -56,10 +62,23 @@ export default function SettingsScreen() {
     }
   }, []);
 
+  const refreshActivePhase = useCallback(async () => {
+    try {
+      const id = await getActivePhaseId();
+      setActivePhaseIdState(id);
+    } catch (error) {
+      Alert.alert(
+        'Phase load failed',
+        error instanceof Error ? error.message : 'Unknown phase load error.'
+      );
+    }
+  }, []);
+
   useFocusEffect(
     useCallback(() => {
       void refreshBodyweight();
-    }, [refreshBodyweight])
+      void refreshActivePhase();
+    }, [refreshBodyweight, refreshActivePhase])
   );
 
   const latestBodyweight = useMemo(
@@ -115,6 +134,25 @@ export default function SettingsScreen() {
       Alert.alert(
         'Preference save failed',
         error instanceof Error ? error.message : 'Could not update rest timer.'
+      );
+    } finally {
+      setIsSavingPreferences(false);
+    }
+  };
+
+  const updateActivePhase = async (nextPhaseId: string) => {
+    if (nextPhaseId === activePhaseId) {
+      return;
+    }
+
+    setIsSavingPreferences(true);
+    try {
+      await setActivePhaseId(nextPhaseId);
+      setActivePhaseIdState(nextPhaseId);
+    } catch (error) {
+      Alert.alert(
+        'Phase save failed',
+        error instanceof Error ? error.message : 'Could not update active phase.'
       );
     } finally {
       setIsSavingPreferences(false);
@@ -332,6 +370,40 @@ export default function SettingsScreen() {
             </Pressable>
           </View>
         </View>
+
+        <View style={styles.settingRow}>
+          <Text style={styles.settingLabel}>Active Phase</Text>
+          <View style={styles.segmentedRow}>
+            {seedProgramPhases.map((phase) => {
+              const selected = activePhaseId === phase.id;
+              return (
+                <Pressable
+                  key={phase.id}
+                  onPress={() => void updateActivePhase(phase.id)}
+                  disabled={isSavingPreferences}
+                  style={({ pressed }) => [
+                    styles.segmentedButton,
+                    selected && styles.segmentedButtonActive,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.segmentedText,
+                      selected && styles.segmentedTextActive,
+                    ]}
+                  >
+                    P{phase.phaseOrder}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
+        <Text style={styles.metaText}>
+          Switching phase changes which day templates show on the Home screen.
+          Past workouts and history stay intact.
+        </Text>
       </View>
 
       <View style={styles.card}>

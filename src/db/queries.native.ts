@@ -29,6 +29,7 @@ const APP_SETTING_FIRST_WORKOUT_ANCHOR = 'first_workout_timestamp';
 const APP_SETTING_THEME = 'theme';
 const APP_SETTING_DEFAULT_REST_SECONDS = 'default_rest_seconds';
 const APP_SETTING_UNITS = 'units';
+const APP_SETTING_ACTIVE_PHASE_ID = 'active_phase_id';
 const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 interface DayTemplateRow {
@@ -97,16 +98,6 @@ interface ActiveWorkoutRow {
   day_number: number;
   day_name: string;
   started_at: string;
-}
-
-interface ExposureWorkoutRow {
-  workout_id: string;
-  completed_at: string;
-}
-
-interface WorkoutSetRow {
-  reps: number;
-  load_kg: number;
 }
 
 interface AppSettingRow {
@@ -253,7 +244,7 @@ export async function initializeDatabase(): Promise<void> {
     await seedDatabaseIfNeeded();
     await importTrainingHistory();
 
-    const defaults: Array<[string, string]> = [
+    const defaults: [string, string][] = [
       [APP_SETTING_THEME, 'dark'],
       [APP_SETTING_DEFAULT_REST_SECONDS, '90'],
       [APP_SETTING_UNITS, 'kg'],
@@ -310,7 +301,7 @@ export async function createWorkoutSession(input: {
   return withDatabase('createWorkoutSession', async (database) => {
     const workoutId = generateWorkoutId();
     const startedAt = input.startedAtOverride ?? new Date().toISOString();
-    const phaseId = input.phaseId ?? HYBRID_PHASE_1_ID;
+    const phaseId = input.phaseId ?? (await resolveActivePhaseId(database));
 
     await database.withExclusiveTransactionAsync(async (transaction) => {
       await transaction.runAsync(
@@ -729,16 +720,44 @@ async function getDayTemplateSlots(
   return slots;
 }
 
+async function resolveActivePhaseId(
+  database: Awaited<ReturnType<typeof getDatabase>>
+): Promise<string> {
+  const row = await database.getFirstAsync<AppSettingRow>(
+    'SELECT value FROM app_settings WHERE key = ?;',
+    [APP_SETTING_ACTIVE_PHASE_ID]
+  );
+  return row?.value ?? HYBRID_PHASE_1_ID;
+}
+
+export async function getActivePhaseId(): Promise<string> {
+  return withDatabase('getActivePhaseId', async (database) => {
+    return resolveActivePhaseId(database);
+  });
+}
+
+export async function setActivePhaseId(phaseId: string): Promise<void> {
+  await withDatabase('setActivePhaseId', async (database) => {
+    await database.runAsync(
+      `INSERT INTO app_settings (key, value)
+       VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value;`,
+      [APP_SETTING_ACTIVE_PHASE_ID, phaseId]
+    );
+  });
+}
+
 async function getDayTemplateByDayNumberInternal(
   dayNumber: number
 ): Promise<DayTemplateWithSlots | null> {
   const database = await getDatabase();
+  const phaseId = await resolveActivePhaseId(database);
 
   const row = await database.getFirstAsync<DayTemplateRow>(
     `SELECT id, phase_id, day_number, day_name
      FROM day_templates
      WHERE phase_id = ? AND day_number = ?;`,
-    [HYBRID_PHASE_1_ID, dayNumber]
+    [phaseId, dayNumber]
   );
 
   if (!row) {
@@ -789,15 +808,16 @@ export async function getDayTemplateById(
 }
 
 export async function listProgramDayTemplates(
-  phaseId = HYBRID_PHASE_1_ID
+  phaseId?: string
 ): Promise<DayTemplateWithSlots[]> {
   return withDatabase('listProgramDayTemplates', async (database) => {
+    const resolvedPhaseId = phaseId ?? (await resolveActivePhaseId(database));
     const rows = await database.getAllAsync<DayTemplateRow>(
       `SELECT id, phase_id, day_number, day_name
        FROM day_templates
        WHERE phase_id = ?
        ORDER BY day_number ASC;`,
-      [phaseId]
+      [resolvedPhaseId]
     );
 
     return Promise.all(
@@ -887,11 +907,12 @@ export async function getActiveWorkout(): Promise<ActiveWorkoutSummary | null> {
 
 export async function getNextDayTemplate(): Promise<DayTemplateWithSlots> {
   return withDatabase('getNextDayTemplate', async (database) => {
+    const phaseId = await resolveActivePhaseId(database);
     const totalDaysRow = await database.getFirstAsync<{ count: number }>(
       `SELECT COUNT(*) AS count
        FROM day_templates
        WHERE phase_id = ?;`,
-      [HYBRID_PHASE_1_ID]
+      [phaseId]
     );
 
     const totalDays = totalDaysRow?.count ?? 0;
@@ -904,8 +925,10 @@ export async function getNextDayTemplate(): Promise<DayTemplateWithSlots> {
        FROM workouts w
        JOIN day_templates dt ON dt.id = w.day_template_id
        WHERE w.completed_at IS NOT NULL
+         AND w.phase_id = ?
        ORDER BY w.completed_at DESC
-       LIMIT 1;`
+       LIMIT 1;`,
+      [phaseId]
     );
 
     const nextDayNumber = latestCompleted
@@ -1187,68 +1210,84 @@ export async function getRecentExerciseExposures(
   limit = 2
 ): Promise<ProgressionExposure[]> {
   return withDatabase('getRecentExerciseExposures', async (database) => {
-    const workouts = await database.getAllAsync<ExposureWorkoutRow>(
-      `SELECT DISTINCT
-        w.id AS workout_id,
-        w.completed_at
-      FROM workouts w
-      JOIN sets s ON s.workout_id = w.id
-      WHERE s.exercise_id = ?
-        AND s.deleted_at IS NULL
-        AND w.completed_at IS NOT NULL
-      ORDER BY w.completed_at DESC
-      LIMIT ?;`,
-      [exerciseId, limit]
-    );
-
-    const exposures: ProgressionExposure[] = [];
-
-    for (const workout of workouts) {
-      const targetRow = await database.getFirstAsync<{ target_rep_high: number }>(
-        `SELECT tes.target_rep_high
-         FROM workouts w
-         JOIN template_exercise_slots tes ON tes.day_template_id = w.day_template_id
-         LEFT JOIN slot_alternate_exercises sae
-           ON sae.slot_id = tes.id
-           AND sae.exercise_id = ?
-         WHERE w.id = ?
-           AND (
-             tes.default_exercise_id = ?
-             OR sae.exercise_id IS NOT NULL
-           )
-         ORDER BY tes.slot_order ASC
-         LIMIT 1;`,
-        [exerciseId, workout.workout_id, exerciseId]
-      );
-
-      const workingSets = await database.getAllAsync<WorkoutSetRow>(
-        `SELECT reps, load_kg
-         FROM sets
-         WHERE workout_id = ?
-           AND exercise_id = ?
-           AND is_warmup = 0
-           AND deleted_at IS NULL
-         ORDER BY set_order ASC;`,
-        [workout.workout_id, exerciseId]
-      );
-
-      exposures.push({
-        workoutId: workout.workout_id,
-        completedAt: workout.completed_at,
-        targetRepHigh: targetRow?.target_rep_high ?? 10,
-        workingSetReps: workingSets.map((setRow) => setRow.reps),
-        topLoadKg:
-          workingSets.reduce((accumulator, setRow) =>
-            Math.max(accumulator, setRow.load_kg), 0
-          ) ?? 0,
-      });
+    interface ExposureRow {
+      workout_id: string;
+      completed_at: string;
+      target_rep_high: number | null;
+      reps: number | null;
+      load_kg: number | null;
+      set_order: number | null;
     }
 
-    return exposures;
+    const rows = await database.getAllAsync<ExposureRow>(
+      `WITH recent_workouts AS (
+        SELECT DISTINCT
+          w.id AS workout_id,
+          w.completed_at,
+          w.day_template_id
+        FROM workouts w
+        JOIN sets s ON s.workout_id = w.id
+        WHERE s.exercise_id = ?
+          AND s.is_warmup = 0
+          AND s.deleted_at IS NULL
+          AND w.completed_at IS NOT NULL
+        ORDER BY w.completed_at DESC
+        LIMIT ?
+      )
+      SELECT
+        rw.workout_id,
+        rw.completed_at,
+        (
+          SELECT tes.target_rep_high
+          FROM template_exercise_slots tes
+          LEFT JOIN slot_alternate_exercises sae
+            ON sae.slot_id = tes.id AND sae.exercise_id = ?
+          WHERE tes.day_template_id = rw.day_template_id
+            AND (tes.default_exercise_id = ? OR sae.exercise_id IS NOT NULL)
+          ORDER BY tes.slot_order ASC
+          LIMIT 1
+        ) AS target_rep_high,
+        s.reps,
+        s.load_kg,
+        s.set_order
+      FROM recent_workouts rw
+      LEFT JOIN sets s
+        ON s.workout_id = rw.workout_id
+        AND s.exercise_id = ?
+        AND s.is_warmup = 0
+        AND s.deleted_at IS NULL
+      ORDER BY rw.completed_at DESC, s.set_order ASC;`,
+      [exerciseId, limit, exerciseId, exerciseId, exerciseId]
+    );
+
+    const byWorkout = new Map<string, ProgressionExposure>();
+
+    for (const row of rows) {
+      let exposure = byWorkout.get(row.workout_id);
+      if (!exposure) {
+        exposure = {
+          workoutId: row.workout_id,
+          completedAt: row.completed_at,
+          targetRepHigh: row.target_rep_high ?? 10,
+          workingSetReps: [],
+          topLoadKg: 0,
+        };
+        byWorkout.set(row.workout_id, exposure);
+      }
+
+      if (row.reps !== null && row.load_kg !== null) {
+        exposure.workingSetReps.push(row.reps);
+        if (row.load_kg > exposure.topLoadKg) {
+          exposure.topLoadKg = row.load_kg;
+        }
+      }
+    }
+
+    return Array.from(byWorkout.values());
   });
 }
 
-export async function listExercises(): Promise<Array<{ id: string; name: string }>> {
+export async function listExercises(): Promise<{ id: string; name: string }[]> {
   return withDatabase('listExercises', async (database) => {
     const rows = await database.getAllAsync<ExerciseOptionRow>(
       `SELECT id, name
