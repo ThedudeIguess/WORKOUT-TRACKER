@@ -24,7 +24,12 @@ export function parsePreferredWeightInput(
   value: string,
   units: UnitPreference
 ): number | null {
-  const parsed = Number(value.trim());
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+
+  const parsed = Number(trimmed);
   if (!Number.isFinite(parsed) || parsed < 0) {
     return null;
   }

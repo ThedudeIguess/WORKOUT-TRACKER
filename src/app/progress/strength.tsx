@@ -49,7 +49,7 @@ function getTrendArrow(
 export default function StrengthTrendsScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [exerciseOptions, setExerciseOptions] = useState<Array<{ id: string; name: string }>>([]);
+  const [exerciseOptions, setExerciseOptions] = useState<{ id: string; name: string }[]>([]);
   const [selectedExerciseId, setSelectedExerciseId] = useState<string | null>(null);
   const [series, setSeries] = useState<StrengthTrendPoint[]>([]);
   const [latestBodyweight, setLatestBodyweight] = useState<number | null>(null);
@@ -208,11 +208,11 @@ export default function StrengthTrendsScreen() {
 
   const targetLines = useMemo(() => {
     if (!latestBodyweight || latestBodyweight <= 0) {
-      return [] as Array<{ label: string; value: number; color: string }>;
+      return [] as { label: string; value: number; color: string }[];
     }
 
     const lowercaseName = selectedExerciseName.toLowerCase();
-    const lines: Array<{ label: string; value: number; color: string }> = [];
+    const lines: { label: string; value: number; color: string }[] = [];
 
     if (lowercaseName.includes('bench')) {
       const targetKg = latestBodyweight;

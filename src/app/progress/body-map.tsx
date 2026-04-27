@@ -154,6 +154,11 @@ export default function BodyMapScreen() {
     [selectedMuscleId, weekHistory]
   );
 
+  const selectedMuscleContributions = useMemo(
+    () => selectedWeek?.exerciseContributionsByMuscle[selectedMuscleId] ?? [],
+    [selectedWeek, selectedMuscleId]
+  );
+
   const selectedMuscleWeekStatus = useMemo(
     () =>
       muscleProgression?.weeks.find(
@@ -390,6 +395,29 @@ export default function BodyMapScreen() {
           </Text>
         </View>
 
+        <Text style={styles.timelineTitle}>Contributing Exercises (this week)</Text>
+        {selectedMuscleContributions.length === 0 ? (
+          <Text style={styles.contributionsEmpty}>
+            No sets logged for this muscle in the selected week.
+          </Text>
+        ) : (
+          <View style={styles.contributionsList}>
+            {selectedMuscleContributions.slice(0, 6).map((contribution) => (
+              <View key={contribution.exerciseId} style={styles.contributionRow}>
+                <Text style={styles.contributionName} numberOfLines={1}>
+                  {contribution.exerciseName}
+                </Text>
+                <Text style={styles.contributionSets}>
+                  {contribution.effectiveSets.toFixed(1)} eff
+                </Text>
+                <Text style={styles.contributionRaw}>
+                  {contribution.setCount}x
+                </Text>
+              </View>
+            ))}
+          </View>
+        )}
+
         <Text style={styles.timelineTitle}>Muscle Week Timeline</Text>
         <ScrollView
           horizontal
@@ -400,7 +428,7 @@ export default function BodyMapScreen() {
             const isSelected = week.calendarWeekNumber === (selectedWeek?.weekNumber ?? 0);
             return (
               <View
-                key={`${selectedMuscleId}-${week.calendarWeekNumber}`}
+                key={week.calendarWeekNumber}
                 style={[styles.timelineChip, isSelected && styles.timelineChipSelected]}
               >
                 <Text style={styles.timelineWeekLabel}>W{week.calendarWeekNumber}</Text>
@@ -804,6 +832,49 @@ const styles = StyleSheet.create({
   },
   timelineStatusMiss: {
     color: theme.colors.warning,
+  },
+  contributionsList: {
+    gap: 4,
+    marginTop: 4,
+  },
+  contributionsEmpty: {
+    color: theme.colors.textMuted,
+    fontSize: theme.fontSize.sm,
+    fontStyle: 'italic',
+    marginTop: 4,
+  },
+  contributionRow: {
+    minHeight: 32,
+    borderRadius: theme.radius.sm,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.bg3,
+    paddingHorizontal: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  contributionName: {
+    flex: 1,
+    color: theme.colors.textPrimary,
+    fontSize: theme.fontSize.sm,
+    fontWeight: '700',
+  },
+  contributionSets: {
+    color: theme.colors.accent,
+    fontSize: theme.fontSize.xs,
+    fontWeight: '900',
+    fontVariant: ['tabular-nums'],
+    minWidth: 56,
+    textAlign: 'right',
+  },
+  contributionRaw: {
+    color: theme.colors.textMuted,
+    fontSize: theme.fontSize.xs,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+    minWidth: 30,
+    textAlign: 'right',
   },
   pressed: {
     opacity: 0.7,

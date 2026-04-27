@@ -6,6 +6,8 @@ import { getTrainingPhase } from './trainingPhase';
 import {
   buildMuscleVolumeResults,
   calculateEffectiveSetsFromRawSets,
+  calculateExerciseContributionsByMuscle,
+  type ExerciseContributionsByMuscle,
 } from './volumeCalculator';
 
 const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
@@ -58,15 +60,16 @@ export interface MevWeekSummary {
   averageMevRatio: number;
   averageMevPercent: number;
   qualifiesAsTrainingWeek: boolean;
-  coverageGroups: Array<{
+  coverageGroups: {
     groupId: string;
     label: string;
     averageRatio: number;
     averagePercent: number;
     muscles: TrackedMuscleMevCoverage[];
-  }>;
+  }[];
   trackedMuscles: TrackedMuscleMevCoverage[];
   results: MuscleVolumeResult[];
+  exerciseContributionsByMuscle: ExerciseContributionsByMuscle;
 }
 
 export interface MevTrainingHistory {
@@ -123,7 +126,8 @@ export function summarizeWeekVolumeAgainstMev(
   startIso: string,
   endIso: string,
   results: MuscleVolumeResult[],
-  trackedMuscleIds: readonly string[] = TRAINING_WEEK_MUSCLE_IDS
+  trackedMuscleIds: readonly string[] = TRAINING_WEEK_MUSCLE_IDS,
+  exerciseContributionsByMuscle: ExerciseContributionsByMuscle = {}
 ): MevWeekSummary {
   const resultByMuscleId = new Map(
     results.map((result) => [result.muscleGroupId, result])
@@ -203,6 +207,7 @@ export function summarizeWeekVolumeAgainstMev(
     coverageGroups,
     trackedMuscles,
     results,
+    exerciseContributionsByMuscle,
   };
 }
 
@@ -249,9 +254,17 @@ export async function calculateMevTrainingHistory(
     const results = buildMuscleVolumeResults(
       calculateEffectiveSetsFromRawSets(weekSets)
     );
+    const contributions = calculateExerciseContributionsByMuscle(weekSets);
 
     weeks.push(
-      summarizeWeekVolumeAgainstMev(weekIndex + 1, startIso, endIso, results)
+      summarizeWeekVolumeAgainstMev(
+        weekIndex + 1,
+        startIso,
+        endIso,
+        results,
+        TRAINING_WEEK_MUSCLE_IDS,
+        contributions
+      )
     );
   }
 

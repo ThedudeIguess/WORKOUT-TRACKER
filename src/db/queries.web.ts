@@ -796,7 +796,7 @@ export async function getRecentExerciseExposures(
   });
 }
 
-export async function listExercises(): Promise<Array<{ id: string; name: string }>> {
+export async function listExercises(): Promise<{ id: string; name: string }[]> {
   ensureInitialized();
 
   return state.exerciseLibrary

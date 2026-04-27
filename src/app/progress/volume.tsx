@@ -117,11 +117,11 @@ export default function VolumeDashboardScreen() {
     [selectedWeekNumber, weekHistory]
   );
 
-  const results = selectedWeek?.results ?? [];
+  const results = useMemo(() => selectedWeek?.results ?? [], [selectedWeek]);
 
-  const maxDisplayValue = Math.max(
-    14,
-    ...results.map((result) => result.thresholds.mrvHigh)
+  const maxDisplayValue = useMemo(
+    () => Math.max(14, ...results.map((result) => result.thresholds.mrvHigh)),
+    [results]
   );
 
   const sortedResults = useMemo(
